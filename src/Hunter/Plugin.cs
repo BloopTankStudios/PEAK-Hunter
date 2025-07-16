@@ -10,6 +10,8 @@ using Photon.Pun;
 using UnityEngine.EventSystems;
 using System.Collections.Generic;
 using System.Collections;
+using BepInEx.Configuration;
+using UnityEngine.SceneManagement;
 
 namespace Hunter;
 
@@ -30,10 +32,12 @@ public partial class Plugin : BaseUnityPlugin
     public static Plugin _;
 
     //Hunter Data
+    private static List<int> hunterDatabase = new List<int>();
     private static bool onHunterCooldown = false;
-    float initialCooldown = 10;
-    float additionalCooldown = 10;
-    static float extraStamina = .5f;
+    ConfigFile hunterConfigData = new ConfigFile(Path.Combine(Paths.ConfigPath, "BT_Hunter.cfg"), true);
+    ConfigEntry<float> initialCooldown;
+    ConfigEntry<float> additionalCooldown;
+    ConfigEntry<float> extraStamina;
 
     //Assets
     private static AssetBundle assets;
@@ -42,45 +46,11 @@ public partial class Plugin : BaseUnityPlugin
 
     //General UI
     private static Image smallRoleIcon;
+    private static GameObject hunterNearPrefab;
     //PassportUI
     private static GameObject roleUIElement;
     private static TextMeshProUGUI roleLabel;
     private static Button roleSwitcher;
-
-    //Stores HunterData on Game Manager
-    public class HunterDatabase : MonoBehaviourPun
-    {
-        public static HunterDatabase _;
-
-        Dictionary<int, bool> isHunter = new Dictionary<int, bool>();
-
-        private void Start()
-        {
-            if (_ != null)
-            {
-                Destroy(this);
-                return;
-            }
-            _ = this;
-
-            Log.LogDebug("Hunter Database attached to Game Handler");
-        }
-
-        public void ChangeRole(int actorNumber)
-        {
-            if (!isHunter.ContainsKey(actorNumber))
-                isHunter[actorNumber] = false;
-            isHunter[actorNumber] = !isHunter[actorNumber];
-        }
-
-        //Determine if is Hunter
-        public bool isSetAsHunter(Character character)
-        {
-            if (isHunter.ContainsKey(character.view.Owner.ActorNumber))
-                return isHunter[character.view.Owner.ActorNumber];
-            return false;
-        }
-    }
 
     //Client to Server Updater
     public class HunterPlayerUpdater : MonoBehaviourPun
@@ -89,8 +59,16 @@ public partial class Plugin : BaseUnityPlugin
         [PunRPC]
         public void RPCA_ChangeRole(Character localCharacter)
         {
-            HunterDatabase._.ChangeRole(localCharacter.view.Owner.ActorNumber);
+            if (hunterDatabase.Contains(localCharacter.view.Owner.ActorNumber))
+                hunterDatabase.Remove(localCharacter.view.Owner.ActorNumber);
+            else
+                hunterDatabase.Add(localCharacter.view.Owner.ActorNumber);
         }
+    }
+
+    private static bool isLocalHunter()
+    {
+        return hunterDatabase.Contains(Character.localCharacter.view.Owner.ActorNumber);
     }
 
     //Loads Plugin
@@ -108,6 +86,15 @@ public partial class Plugin : BaseUnityPlugin
 
         _ = this;
 
+        //Config File
+        initialCooldown = hunterConfigData.Bind("Gamemode", "InitialHunterCooldown", 10f,
+            "Change the Cooldown of how long the Hunter is knocked out");
+        additionalCooldown = hunterConfigData.Bind("Gamemode", "AdditionalHunterCooldown", 10f,
+            "Increases the amount of Cooldown applied after each Section");
+        extraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
+            "Applies this extra Stamina when the Hunter is rested");
+        Log.LogDebug("Config File Created");
+
         //Load AssetBundle
         string sAssemblyLocation = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "assets");
         assets = AssetBundle.LoadFromFile(Path.Combine(sAssemblyLocation, "peak-hunter"));
@@ -116,43 +103,38 @@ public partial class Plugin : BaseUnityPlugin
         Texture2D hunter_tex = assets.LoadAsset<Texture2D>("Hunter_Icon");
         climberSprite = Sprite.Create(climber_tex, new Rect(0, 0, climber_tex.width, climber_tex.height), new Vector2(0.5f, 0.5f));
         hunterSprite = Sprite.Create(hunter_tex, new Rect(0, 0, hunter_tex.width, hunter_tex.height), new Vector2(0.5f, 0.5f));
+        Log.LogDebug("Assets Loaded");
 
         //Add Patches to Harmony
         Harmony.CreateAndPatchAll(typeof(Plugin));
+        Log.LogDebug("Methods Patched");
 
         // Log our awake here so we can see it in LogOutput.log file
         Log.LogInfo($"Plugin {Name} is loaded!");
     }
 
     //---TESTING---
-    private void Update()
+    /*private void Update()
     {
+        //Spawn to next Target
         if (Input.GetKeyDown(KeyCode.G))
         {
-            Vector3 spawnPosition = MapHandler.Instance.segments[MapHandler.Instance.currentSegment + 1].reconnectSpawnPos.position;
-            switch ((Segment)MapHandler.Instance.currentSegment)
-            {
-                case Segment.TheKiln:
-                    spawnPosition = MapHandler.Instance.respawnTheKiln.position;
-                    break;
-                case Segment.Peak:
-                    spawnPosition = MapHandler.Instance.respawnThePeak.position;
-                    break;
-            }
-            Character.localCharacter.WarpPlayer(spawnPosition, false);
+            Log.LogDebug("Debug - Warping to next campfire");
+            Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, RespawnCharacterPos(true), true);
         }
 
+        //Determine if player is Hunter
         if (Input.GetKeyDown(KeyCode.F))
         {
-            if (HunterDatabase._.isSetAsHunter(Character.localCharacter))
+            if (isLocalHunter())
             {
-                Log.LogDebug("Applied Status to Hunter");
+                Log.LogDebug("Debug - Applied Status to Hunter");
                 Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1);
             }
         }
-    }
+    }*/
 
-    //Add Database Code on Player
+    //Add Database Updater Code on Photon Player
     [HarmonyPatch(typeof(Character), nameof(Character.Awake))]
     [HarmonyPostfix]
     private static void AddHunterUpdaterPatch(Character __instance)
@@ -165,15 +147,19 @@ public partial class Plugin : BaseUnityPlugin
         smallRoleIcon.transform.localScale = Vector3.one * .5f;
         smallRoleIcon.GetComponent<RectTransform>().anchoredPosition = new Vector2(-275, 55);
 
-        smallRoleIcon.sprite = HunterDatabase._.isSetAsHunter(__instance) ? hunterSprite : climberSprite;
+        smallRoleIcon.sprite = isLocalHunter() ? hunterSprite : climberSprite;
+        Log.LogDebug("Small Role Icon added to HUD");
     }
 
-    //Add Database Code on Player
-    [HarmonyPatch(typeof(GameHandler), nameof(GameHandler.Awake))]
+    //Add The Hunter Is Near to GUI
+    [HarmonyPatch(typeof(GUIManager), nameof(GUIManager.Awake))]
     [HarmonyPostfix]
-    private static void AddHunterDataPatch(GameHandler __instance)
+    private static void HunterIsNearPatch(GUIManager __instance)
     {
-        __instance.gameObject.AddComponent<HunterDatabase>();
+        hunterNearPrefab = Instantiate(__instance.fogRises, __instance.fogRises.transform.parent);
+        hunterNearPrefab.transform.Find("Fog").GetComponent<LocalizedText>().enabled = false;
+        hunterNearPrefab.transform.Find("Fog").GetComponent<TextMeshProUGUI>().text = "THE HUNTER IS NEAR...";
+        Log.LogDebug("Hunter Near UI Prefab-ed");
     }
 
     //Setup Passport UI
@@ -181,8 +167,6 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPostfix]
     private static void PassportUIPatch(PassportManager __instance)
     {
-        bool localIsHunter = HunterDatabase._.isSetAsHunter(Character.localCharacter);
-
         //Base Element
         roleUIElement = Instantiate(__instance.transform.Find("PassportUI/Canvas/Panel/Panel/BG/UI_Close").gameObject);
         roleUIElement.name = "UI_Role";
@@ -213,7 +197,7 @@ public partial class Plugin : BaseUnityPlugin
         transform.anchorMax = new Vector2(0.5f, 1);
         transform.anchoredPosition = new Vector2(-25, -25);
         //Modify Text
-        roleLabel.text = !localIsHunter ? "CLIMBER" : "HUNTER";
+        roleLabel.text = isLocalHunter() ? "HUNTER" : "CLIMBER";
         roleLabel.fontSize = 29;
         roleLabel.horizontalAlignment = HorizontalAlignmentOptions.Center;
         TextMeshProUGUI exampleText = __instance.transform.Find("PassportUI/Canvas/Panel/Panel/BG/Text/Name/Text").GetComponent<TextMeshProUGUI>();
@@ -239,14 +223,14 @@ public partial class Plugin : BaseUnityPlugin
         transform.anchorMax = new Vector2(1, 1);
 
         //Modify
-        roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(!localIsHunter ? "Climber_Icon" : "Hunter_Icon");
+        roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(isLocalHunter() ? "Hunter_Icon" : "Climber_Icon");
         roleSwitcher.transform.Find("SFX Click").GetComponent<SFX_PlayOneShot>().sfxs =
             __instance.transform.Find("PassportUI/Canvas/Panel/Panel/BG/Options/Grid/UI_PassportGridButton/SFX Click").GetComponent<SFX_PlayOneShot>().sfxs;
         roleSwitcher.onClick = new Button.ButtonClickedEvent();
         roleSwitcher.onClick.AddListener(() => ChangeRole());
 
         //Done
-        Log.LogDebug("Passport UI Loaded!");
+        Log.LogDebug("Passport UI Modified");
     }
 
     //Boarding Pass UI Icons
@@ -256,20 +240,21 @@ public partial class Plugin : BaseUnityPlugin
     {
         //Set corresponding sprites
         for (int i = 0; i < Character.AllCharacters.Count; i++)
-            __instance.players[i].sprite = HunterDatabase._.isSetAsHunter(Character.AllCharacters[i]) ? hunterSprite : climberSprite;
+            __instance.players[i].sprite = hunterDatabase.Contains(Character.AllCharacters[i].view.Owner.ActorNumber) ? hunterSprite : climberSprite;
+        Log.LogDebug("Boarding Pass UI Modified");
     }
 
     //Click to Change Roles
     private static void ChangeRole()
     {
         //Change Role
-        bool localIsHunter = !HunterDatabase._.isSetAsHunter(Character.localCharacter);
-        Character.localCharacter.view.RPC("RPCA_ChangeRole", RpcTarget.All, Character.localCharacter);
+        bool localIsHunter = !isLocalHunter();
+        Character.localCharacter.view.RPC("RPCA_ChangeRole", RpcTarget.AllBuffered, Character.localCharacter);
 
         //Modify UI
         smallRoleIcon.sprite = localIsHunter ? hunterSprite : climberSprite;
-        roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(!localIsHunter ? "Climber_Icon" : "Hunter_Icon");
-        roleLabel.text = !localIsHunter ? "CLIMBER" : "HUNTER";
+        roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(localIsHunter ? "Hunter_Icon" : "Climber_Icon");
+        roleLabel.text = localIsHunter ? "HUNTER": "CLIMBER";
         EventSystem.current.SetSelectedGameObject(null);
 
         //Done
@@ -286,7 +271,9 @@ public partial class Plugin : BaseUnityPlugin
         printout = "";
         foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
         {
-            if (!(allPlayerCharacter == null) && !allPlayerCharacter.photonView.Owner.IsInactive && !HunterDatabase._.isSetAsHunter(allPlayerCharacter))
+            //Skip Hunters in Check
+            if (!(allPlayerCharacter == null) && !allPlayerCharacter.photonView.Owner.IsInactive &&
+                !hunterDatabase.Contains(allPlayerCharacter.photonView.Owner.ActorNumber))
             {
                 float num = Vector3.Distance(__instance.transform.position, allPlayerCharacter.Center);
                 if (num > 15f && !allPlayerCharacter.data.dead)
@@ -309,67 +296,72 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPatch(typeof(RunManager), nameof(RunManager.StartRun))]
     [HarmonyPatch(typeof(Campfire), nameof(Campfire.Light_Rpc))]
     [HarmonyPostfix]
-    private static void ReachedNextStagePatch(Campfire __instance)
+    private static void ReachedNextStagePatch()
     {
-        _.StartCoroutine(_.LoadNewStage());
+        //Activate only if not in lobby
+        if (SceneManager.GetActiveScene().name != "Airport")
+        {
+            //Reset
+            if (MapHandler.Instance.currentSegment == 0)
+            {
+                Log.LogDebug("Reset Section Progress");
+                currSegment = -1;
+            }
+            //Load Section w/ Hunter Cooldown
+            _.StartCoroutine(_.LoadNewStage());
+        }
     }
 
     //When first spawned and at each campfire
+    static int currSegment = -1;
     public IEnumerator LoadNewStage()
     {
-        if (HunterDatabase._.isSetAsHunter(Character.localCharacter))
-        {
+        currSegment++;
+        if (currSegment == 0)
             yield return new WaitForSeconds(5);
-            //Display The Hunter Is Near
-            /*StartCoroutine(showHunterTitle());
-            IEnumerator showHunterTitle()
-            {
-                yield return new WaitForSeconds(10);
-                GUIManager.instance.SetHeroTitle("The Hunter Is Near", null);
-            }*/
+
+        //Display The Hunter Is Near
+        StartCoroutine(showHunterTitle());
+        IEnumerator showHunterTitle()
+        {
+            Log.LogDebug("Show Hunter is Near");
+            GameObject hunterNear = Instantiate(hunterNearPrefab, hunterNearPrefab.transform.parent);
+            hunterNear.SetActive(true);
+            yield return new WaitForSeconds(4);
+            Destroy(hunterNear);
+        }
+
+        if (isLocalHunter())
+        {
+            CharacterAfflictions afflictions = Character.localCharacter.refs.afflictions;
 
             //Hunter Cooldown
             onHunterCooldown = true;
             // Refresh except Curse
-            Character.localCharacter.refs.afflictions.ClearAllStatus();
+            afflictions.ClearAllStatus();
             // Give Poison til ready
-            //WIP - You are able to heal if given enough time!
-            Character.localCharacter.refs.afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = float.PositiveInfinity;
-            Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison,
-                Character.localCharacter.GetMaxStamina());
+            afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1);
+            afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = float.PositiveInfinity;
 
             // Wait
-            float cooldownLength = initialCooldown + additionalCooldown * MapHandler.Instance.currentSegment;
+            float cooldownLength = initialCooldown.Value + additionalCooldown.Value * MapHandler.Instance.currentSegment;
             Log.LogDebug("Hunter Cooldown: " + cooldownLength);
             yield return new WaitForSeconds(cooldownLength);
 
             //Spawn Hunter
             onHunterCooldown = false;
+            Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, RespawnCharacterPos(false), true);
 
-            // Spawn Location
-            Vector3 spawnPosition = MapHandler.Instance.segments[MapHandler.Instance.currentSegment].reconnectSpawnPos.position;
-            switch ((Segment)MapHandler.Instance.currentSegment)
-            {
-                case Segment.TheKiln:
-                    spawnPosition = MapHandler.Instance.respawnTheKiln.position;
-                    break;
-                case Segment.Peak:
-                    spawnPosition = MapHandler.Instance.respawnThePeak.position;
-                    break;
-            }
-
-            // Warp
-            Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, spawnPosition, true);
-            // Refresh except Curse again in case fell
-            Character.localCharacter.refs.afflictions.ClearAllStatus();
+            // Refresh except Curse again in case fell or other afflictions
+            Character.localCharacter.refs.items.DropAllItems(true);
+            afflictions.ClearAllStatus();
+            afflictions.UpdateWeight();
             // Reset the Poison again
-            Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison,
+            afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison,
                 Character.localCharacter.GetMaxStamina());
             // Set to heal immediately
-            Character.localCharacter.refs.afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0;
-            //WIP - DOESNT WORK
-            Character.localCharacter.refs.afflictions.SubtractStatus(CharacterAfflictions.STATUSTYPE.Poison,
-                Character.localCharacter.refs.afflictions.poisonReductionPerSecond * Time.deltaTime);
+            afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0;
+            afflictions.currentDecrementalStatuses[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0.025f;
         }
     }
 
@@ -377,18 +369,82 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPostfix]
     private static void HunterCantDieOnCooldownPatch(Character __instance)
     {
-        if (onHunterCooldown && HunterDatabase._.isSetAsHunter(__instance))
+        if (onHunterCooldown && isLocalHunter())
+        {
+            //Hunter can't die on cooldown
             __instance.data.deathTimer = 0;
+        }
+    }
+
+    [HarmonyPatch(typeof(Character), nameof(Character.CheckEndGame))]
+    [HarmonyPrefix]
+    private static bool HunterDeathPatch(Character __instance)
+    {
+        //Modified from original CheckEndGame Function
+        bool flag = true;
+        for (int i = 0; i < Character.AllCharacters.Count; i++)
+        {
+            //Skip Hunters in Check
+            if (!Character.AllCharacters[i].data.dead && !hunterDatabase.Contains(Character.AllCharacters[i].photonView.Owner.ActorNumber))
+            {
+                flag = false;
+            }
+        }
+        //flag = false;
+        if (flag)
+        {
+            if (PhotonNetwork.IsMasterClient)
+                __instance.EndGame();
+            return false;
+        }
+
+        //Immediate Respawn of Hunter if game continues
+        if (isLocalHunter())
+        {
+            _.StartCoroutine(waitForRespawn());
+            IEnumerator waitForRespawn()
+            {
+                yield return new WaitForSeconds(5);
+                Log.LogDebug("Hunter Respawned");
+                Character.localCharacter.refs.afflictions.UpdateWeight();
+                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), true);
+            }
+        }
+        //Don't return to original method
+        return false;
+    }
+
+    private static Vector3 RespawnCharacterPos(bool nextSection)
+    {
+        int sectionNum = currSegment;
+        if (nextSection)
+            sectionNum++;
+
+        // Spawn Location
+        Vector3 spawnPosition;
+        switch ((Segment)sectionNum)
+        {
+            case Segment.TheKiln:
+                spawnPosition = MapHandler.Instance.respawnTheKiln.position;
+                break;
+            case Segment.Peak:
+                spawnPosition = MapHandler.Instance.respawnThePeak.position;
+                break;
+            default:
+                spawnPosition = MapHandler.Instance.segments[sectionNum].reconnectSpawnPos.position;
+                break;
+        }
+        return spawnPosition;
     }
 
     [HarmonyPatch(typeof(Character), nameof(Character.ClampStamina))]
     [HarmonyPostfix]
     private static void HunterExtraStaminaPatch(Character __instance)
     {
-        if (HunterDatabase._.isSetAsHunter(__instance))
+        if (isLocalHunter())
         {
-            if (__instance.data.currentStamina == __instance.GetMaxStamina())
-                __instance.SetExtraStamina(extraStamina);
+            if (__instance.data.currentStamina == __instance.GetMaxStamina() && __instance.data.extraStamina < _.extraStamina.Value)
+                __instance.SetExtraStamina(_.extraStamina.Value);
         }
     }
 }
