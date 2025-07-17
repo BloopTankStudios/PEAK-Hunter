@@ -35,9 +35,14 @@ public partial class Plugin : BaseUnityPlugin
     private static List<int> hunterDatabase = new List<int>();
     private static bool onHunterCooldown = false;
     ConfigFile hunterConfigData = new ConfigFile(Path.Combine(Paths.ConfigPath, "BT_Hunter.cfg"), true);
+    ConfigEntry<bool> zombieMode;
     ConfigEntry<float> initialCooldown;
     ConfigEntry<float> additionalCooldown;
-    ConfigEntry<float> extraStamina;
+    ConfigEntry<float> attackStaminaUsage;
+    ConfigEntry<float> attackKnockbackMultiplier;
+    ConfigEntry<float> attackDamage;
+    ConfigEntry<float> hunterExtraStamina;
+    ConfigEntry<float> climberExtraStamina;
     ConfigEntry<float> hunterDamageMultiplier;
     ConfigEntry<float> climberDamageMultiplier;
 
@@ -53,6 +58,8 @@ public partial class Plugin : BaseUnityPlugin
     private static GameObject roleUIElement;
     private static TextMeshProUGUI roleLabel;
     private static Button roleSwitcher;
+    //BoardingPassUI
+    private static BoardingPass boardingPass;
 
     //Client to Server Updater
     public class HunterPlayerUpdater : MonoBehaviourPun
@@ -65,6 +72,9 @@ public partial class Plugin : BaseUnityPlugin
                 hunterDatabase.Remove(ActorNumber);
             else
                 hunterDatabase.Add(ActorNumber);
+            //Update BoardingPass UI for All
+            if (boardingPass != null)
+                BoardingPassUIPatch(boardingPass);
         }
     }
 
@@ -94,16 +104,26 @@ public partial class Plugin : BaseUnityPlugin
         _ = this;
 
         //Config File
-        initialCooldown = hunterConfigData.Bind("Gamemode", "InitialHunterCooldown", 10f,
+        zombieMode = hunterConfigData.Bind("_Gamemode", "ZombieMode", false,
+            "When Enabled, once Climbers die, they join the Hunter's Team");
+        initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldown", 10f,
             "Change the Cooldown of how long the Hunter is knocked out");
-        additionalCooldown = hunterConfigData.Bind("Gamemode", "AdditionalHunterCooldown", 10f,
+        additionalCooldown = hunterConfigData.Bind("_Gamemode", "AdditionalHunterCooldown", 10f,
             "Increases the amount of Cooldown applied after each Section");
-        extraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
+        attackStaminaUsage = hunterConfigData.Bind("_Gamemode", "HunterAttackStaminaUsage", 0.5f,
+            "The amount of Stamina needed when the Hunter uses their Attack");
+        attackKnockbackMultiplier = hunterConfigData.Bind("_Gamemode", "HunterAttackKnockbackMultiplier", 1f,
+            "Modifies the amount of Knockback received when within range of the Hunter Attack");
+        attackDamage = hunterConfigData.Bind("_Gamemode", "HunterAttackMaxDamage", .3f,
+            "The amount of Max Damage that can be received when within range of the Hunter Attack");
+        hunterExtraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
             "Applies this extra Stamina when the Hunter is rested");
+        climberExtraStamina = hunterConfigData.Bind("ClimberStats", "ExtraStamina", 0f,
+            "Applies this extra Stamina when the Climber is rested");
         hunterDamageMultiplier = hunterConfigData.Bind("HunterStats", "DamageMultiplier", 0.5f,
             "Reduced/Increases the amount of Damage the Hunter takes");
         climberDamageMultiplier = hunterConfigData.Bind("ClimberStats", "DamageMultiplier", 0.5f,
-            "Reduced/Increases the amount of Damage the Climber takes");
+            "Reduced/Increases the amount of Damage the Climber takes. (Not Including the Hunter Attack)");
         Log.LogDebug("Config File Created");
 
         //Load AssetBundle
@@ -177,6 +197,7 @@ public partial class Plugin : BaseUnityPlugin
     private static void HunterIsNearPatch(GUIManager __instance)
     {
         hunterNearPrefab = Instantiate(__instance.fogRises, __instance.fogRises.transform.parent);
+        hunterNearPrefab.name = "Notification_HunterIsNear";
         hunterNearPrefab.transform.Find("Fog").GetComponent<LocalizedText>().enabled = false;
         hunterNearPrefab.transform.Find("Fog").GetComponent<TextMeshProUGUI>().text = "THE HUNTER IS NEAR...";
         Log.LogDebug("Hunter Near UI Prefab-ed");
@@ -261,6 +282,9 @@ public partial class Plugin : BaseUnityPlugin
         //Set corresponding sprites
         for (int i = 0; i < Character.AllCharacters.Count; i++)
             __instance.players[i].sprite = isHunter(Character.AllCharacters[i]) ? hunterSprite : climberSprite;
+        //Log BoardingPass instance for later updating
+        if (boardingPass == null)
+            boardingPass = __instance;
         Log.LogDebug("Boarding Pass UI Modified");
     }
 
@@ -273,9 +297,12 @@ public partial class Plugin : BaseUnityPlugin
 
         //Modify UI
         smallRoleIcon.sprite = localIsHunter ? hunterSprite : climberSprite;
-        roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(localIsHunter ? "Hunter_Icon" : "Climber_Icon");
-        roleLabel.text = localIsHunter ? "HUNTER" : "CLIMBER";
-        EventSystem.current.SetSelectedGameObject(null);
+        if (roleSwitcher != null)
+        {
+            roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(localIsHunter ? "Hunter_Icon" : "Climber_Icon");
+            roleLabel.text = localIsHunter ? "HUNTER" : "CLIMBER";
+            EventSystem.current.SetSelectedGameObject(null);
+        }
 
         //Done
         Log.LogDebug("Role Changed");
@@ -423,7 +450,7 @@ public partial class Plugin : BaseUnityPlugin
                 flag = false;
             }
         }
-        flag = false;
+        //flag = false;
         if (flag)
         {
             if (PhotonNetwork.IsMasterClient)
@@ -444,6 +471,28 @@ public partial class Plugin : BaseUnityPlugin
                 //Custom Effects
                 Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
                 Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f);
+            }
+        }
+        else if (_.zombieMode.Value)
+        {
+            //Put on Hunter's team
+            _.StartCoroutine(waitForRespawn());
+            IEnumerator waitForRespawn()
+            {
+                yield return new WaitForSeconds(5);
+                ChangeRole();
+                Log.LogDebug("Climber Respawned as Hunter");
+                Character.localCharacter.refs.afflictions.UpdateWeight();
+                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), false);
+                //Custom Effects
+                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
+                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f);
+                //Show User that they are now a Hunter
+                GameObject hunterNear = Instantiate(hunterNearPrefab, hunterNearPrefab.transform.parent);
+                hunterNear.transform.Find("Fog").GetComponent<TextMeshProUGUI>().text = "YOU ARE NOW A HUNTER";
+                hunterNear.SetActive(true);
+                yield return new WaitForSeconds(4);
+                Destroy(hunterNear);
             }
         }
         //Don't return to original method
@@ -475,12 +524,17 @@ public partial class Plugin : BaseUnityPlugin
 
     [HarmonyPatch(typeof(Character), nameof(Character.ClampStamina))]
     [HarmonyPostfix]
-    private static void HunterExtraStaminaPatch(Character __instance)
+    private static void ExtraStaminaPatch(Character __instance)
     {
         if (isLocalHunter())
         {
-            if (__instance.data.currentStamina == __instance.GetMaxStamina() && __instance.data.extraStamina < _.extraStamina.Value)
-                __instance.SetExtraStamina(_.extraStamina.Value);
+            if (__instance.data.currentStamina == __instance.GetMaxStamina() && __instance.data.extraStamina < _.hunterExtraStamina.Value)
+                __instance.SetExtraStamina(_.hunterExtraStamina.Value);
+        }
+        else
+        {
+            if (__instance.data.currentStamina == __instance.GetMaxStamina() && __instance.data.extraStamina < _.climberExtraStamina.Value)
+                __instance.SetExtraStamina(_.climberExtraStamina.Value);
         }
     }
 
@@ -499,12 +553,12 @@ public partial class Plugin : BaseUnityPlugin
 
     [HarmonyPatch(typeof(CharacterGrabbing), nameof(CharacterGrabbing.RPCA_StartReaching))]
     [HarmonyPostfix]
-    private static void HunterReachPainPatch(CharacterGrabbing __instance)
+    private static void HunterReachAttackPatch(CharacterGrabbing __instance)
     {
-        if (!isHunter(__instance.character) || __instance.character.GetTotalStamina() < .5)
+        if (!isHunter(__instance.character) || __instance.character.GetTotalStamina() < _.attackStaminaUsage.Value)
             return;
         //Summons area affect cloud that will push away and hurt anyone in vicinity
-        Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 2;
+        Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 1.25f;
         __instance.character.PlayPoofVFX(attackPos);
 
         foreach (Character character in Character.AllCharacters)
@@ -512,14 +566,17 @@ public partial class Plugin : BaseUnityPlugin
             float num = Vector3.Distance(attackPos, character.Center);
             if (num < 5)
             {
-                character.AddForce((5 - num) * (character.Center - attackPos).normalized * 10);
-                character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Injury, (5 - num) / 5 * .3f);
-                //WIP - Output from reduced damage is 0.09
-                //WIP - Also there's no pushback :(
+                character.Fall(0.1f);
+                character.AddForce((5 - num) * (character.Center - attackPos).normalized * 133 *
+                    _.attackKnockbackMultiplier.Value);
+                //Hunter doesn't get damaged
+                if (!isHunter(character))
+                    character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Injury, (5 - num) / 5 *
+                        _.attackDamage.Value / _.climberDamageMultiplier.Value);
             }
         }
 
-        __instance.character.UseStamina(.5f, true);
+        __instance.character.UseStamina(_.attackStaminaUsage.Value, true);
 
         Log.LogDebug("Hunter Attack!");
     }
