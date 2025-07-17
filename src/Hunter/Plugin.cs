@@ -30,21 +30,27 @@ public partial class Plugin : BaseUnityPlugin
     internal static ManualLogSource Log { get; private set; } = null!;
 
     public static Plugin _;
+    private static Dictionary<int, bool> playersReady = new Dictionary<int, bool>();
 
     //Hunter Data
     private static List<int> hunterDatabase = new List<int>();
     private static bool onHunterCooldown = false;
     ConfigFile hunterConfigData = new ConfigFile(Path.Combine(Paths.ConfigPath, "BT_Hunter.cfg"), true);
+    // Gamemode
     ConfigEntry<bool> zombieMode;
     ConfigEntry<float> initialCooldown;
     ConfigEntry<float> additionalCooldown;
+    // Climber
+    ConfigEntry<float> climberExtraStamina;
+    ConfigEntry<float> climberDamageMultiplier;
+    ConfigEntry<int> hunterStunAmount;
+    ConfigEntry<float> stunTime;
+    // Hunter
+    ConfigEntry<float> hunterExtraStamina;
+    ConfigEntry<float> hunterDamageMultiplier;
     ConfigEntry<float> attackStaminaUsage;
     ConfigEntry<float> attackKnockbackMultiplier;
     ConfigEntry<float> attackDamage;
-    ConfigEntry<float> hunterExtraStamina;
-    ConfigEntry<float> climberExtraStamina;
-    ConfigEntry<float> hunterDamageMultiplier;
-    ConfigEntry<float> climberDamageMultiplier;
 
     //Assets
     private static AssetBundle assets;
@@ -64,7 +70,9 @@ public partial class Plugin : BaseUnityPlugin
     //Client to Server Updater
     public class HunterPlayerUpdater : MonoBehaviourPun
     {
-        //Update on all clients
+        public int stunsLeft = 0;
+
+        //Update Roles on all clients
         [PunRPC]
         public void RPCA_ChangeRole(int ActorNumber)
         {
@@ -72,9 +80,27 @@ public partial class Plugin : BaseUnityPlugin
                 hunterDatabase.Remove(ActorNumber);
             else
                 hunterDatabase.Add(ActorNumber);
+
+            //Remove any Extra Stamina buff
+            Character character;
+            PlayerHandler.TryGetCharacter(ActorNumber, out character);
+            character.SetExtraStamina(0);
+
             //Update BoardingPass UI for All
             if (boardingPass != null)
                 BoardingPassUIPatch(boardingPass);
+        }
+
+        //Use Global Hunter Stun
+        [PunRPC]
+        public void RPCA_GlobalStun()
+        {
+            if (stunsLeft == 0)
+                return;
+            stunsLeft--;
+
+            StartCoroutine(_.showMessage(isLocalHunter() ? "STUN ACTIVATED" : "HUNTERS STUNNED"));
+            
         }
     }
 
@@ -86,6 +112,41 @@ public partial class Plugin : BaseUnityPlugin
     private static bool isHunter(Character character)
     {
         return hunterDatabase.Contains(character.view.Owner.ActorNumber);
+    }
+
+    private static void changeCharacterReady(Character character, bool isReady)
+    {
+        if (!playersReady.ContainsKey(character.view.Owner.ActorNumber))
+            playersReady.Add(character.view.Owner.ActorNumber, isReady);
+        else
+            playersReady[character.view.Owner.ActorNumber] = isReady;
+    }
+
+    private static bool playersReadyForHunter()
+    {
+        bool flag = true;
+        foreach (Photon.Realtime.Player player in PhotonNetwork.PlayerList)
+            //Check if Character object has "awoken"
+            if (!playersReady.ContainsKey(player.ActorNumber) || !playersReady[player.ActorNumber])
+                flag = false;
+            else
+            {
+                //Check if Character is still in loading screen
+                Character character = PlayerHandler.GetPlayerCharacter(player);
+                if (character.data.passedOutOnTheBeach > 0)
+                    flag = false;
+            }
+        return flag;
+    }
+
+    private IEnumerator showMessage(string message)
+    {
+        Log.LogDebug("Show Message: " + message);
+        GameObject hunterNear = Instantiate(hunterNearPrefab, hunterNearPrefab.transform.parent);
+        hunterNear.transform.Find("Fog").GetComponent<TextMeshProUGUI>().text = message;
+        hunterNear.SetActive(true);
+        yield return new WaitForSeconds(4);
+        Destroy(hunterNear);
     }
 
     //Loads Plugin
@@ -104,26 +165,33 @@ public partial class Plugin : BaseUnityPlugin
         _ = this;
 
         //Config File
+        // Gamemode
         zombieMode = hunterConfigData.Bind("_Gamemode", "ZombieMode", false,
             "When Enabled, once Climbers die, they join the Hunter's Team");
         initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldown", 10f,
             "Change the Cooldown of how long the Hunter is knocked out");
         additionalCooldown = hunterConfigData.Bind("_Gamemode", "AdditionalHunterCooldown", 10f,
             "Increases the amount of Cooldown applied after each Section");
-        attackStaminaUsage = hunterConfigData.Bind("_Gamemode", "HunterAttackStaminaUsage", 0.5f,
-            "The amount of Stamina needed when the Hunter uses their Attack");
-        attackKnockbackMultiplier = hunterConfigData.Bind("_Gamemode", "HunterAttackKnockbackMultiplier", 1f,
-            "Modifies the amount of Knockback received when within range of the Hunter Attack");
-        attackDamage = hunterConfigData.Bind("_Gamemode", "HunterAttackMaxDamage", .3f,
-            "The amount of Max Damage that can be received when within range of the Hunter Attack");
-        hunterExtraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
-            "Applies this extra Stamina when the Hunter is rested");
+        // Climber
         climberExtraStamina = hunterConfigData.Bind("ClimberStats", "ExtraStamina", 0f,
             "Applies this extra Stamina when the Climber is rested");
-        hunterDamageMultiplier = hunterConfigData.Bind("HunterStats", "DamageMultiplier", 0.5f,
-            "Reduced/Increases the amount of Damage the Hunter takes");
-        climberDamageMultiplier = hunterConfigData.Bind("ClimberStats", "DamageMultiplier", 0.5f,
+        climberDamageMultiplier = hunterConfigData.Bind("ClimberStats", "FallDamageMultiplier", 0.5f,
             "Reduced/Increases the amount of Damage the Climber takes. (Not Including the Hunter Attack)");
+        hunterStunAmount = hunterConfigData.Bind("ClimberStats", "HunterStunAmount", 1,
+            "Number of Emergency Global Stuns each Climber gets");
+        stunTime = hunterConfigData.Bind("ClimberStats", "StunTime", 10f,
+            "How long the Stun lasts on Hunters");
+        // Hunter
+        hunterExtraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
+            "Applies this extra Stamina when the Hunter is rested");
+        hunterDamageMultiplier = hunterConfigData.Bind("HunterStats", "FallDamageMultiplier", 0.5f,
+            "Reduced/Increases the amount of Damage the Hunter takes");
+        attackStaminaUsage = hunterConfigData.Bind("HunterStats", "AttackStaminaUsage", 0.5f,
+            "The amount of Stamina needed when the Hunter uses their Attack");
+        attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 1f,
+            "Modifies the amount of Knockback received when within range of the Hunter Attack");
+        attackDamage = hunterConfigData.Bind("HunterStats", "AttackMaxDamage", .3f,
+            "The amount of Max Damage that can be received when within range of the Hunter Attack");
         Log.LogDebug("Config File Created");
 
         //Load AssetBundle
@@ -151,7 +219,7 @@ public partial class Plugin : BaseUnityPlugin
     }
 
     //---TESTING---
-    /*private void Update()
+    private void Update()
     {
         //Spawn to next Target
         if (Input.GetKeyDown(KeyCode.G))
@@ -169,7 +237,10 @@ public partial class Plugin : BaseUnityPlugin
                 Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1);
             }
         }
-    }*/
+
+        //if (!playersReadyForHunter())
+        //    Log.LogDebug("Players Not Ready");
+    }
 
     //Add Database Updater Code on Photon Player
     [HarmonyPatch(typeof(Character), nameof(Character.Awake))]
@@ -177,6 +248,12 @@ public partial class Plugin : BaseUnityPlugin
     private static void AddHunterUpdaterPatch(Character __instance)
     {
         __instance.gameObject.AddComponent<HunterPlayerUpdater>();
+
+        //Add if player is loaded/ready to begin Hunter scene
+        if (SceneManager.GetActiveScene().name == "Airport")
+            changeCharacterReady(__instance, false);
+        else
+            changeCharacterReady(__instance, true);
 
         //Add SmallIcon to bottom left
         if (__instance.IsLocal)
@@ -197,9 +274,8 @@ public partial class Plugin : BaseUnityPlugin
     private static void HunterIsNearPatch(GUIManager __instance)
     {
         hunterNearPrefab = Instantiate(__instance.fogRises, __instance.fogRises.transform.parent);
-        hunterNearPrefab.name = "Notification_HunterIsNear";
+        hunterNearPrefab.name = "Notification_Hunter";
         hunterNearPrefab.transform.Find("Fog").GetComponent<LocalizedText>().enabled = false;
-        hunterNearPrefab.transform.Find("Fog").GetComponent<TextMeshProUGUI>().text = "THE HUNTER IS NEAR...";
         Log.LogDebug("Hunter Near UI Prefab-ed");
     }
 
@@ -353,10 +429,15 @@ public partial class Plugin : BaseUnityPlugin
             {
                 Log.LogDebug("Reset Section Progress");
                 currSegment = -1;
+                foreach (Character character in Character.AllCharacters)
+                    character.GetComponent<HunterPlayerUpdater>().stunsLeft = -1;
             }
             //Load Section w/ Hunter Cooldown
             _.StartCoroutine(_.LoadNewStage());
         }
+        else
+            foreach (Character character in Character.AllCharacters)
+                character.GetComponent<HunterPlayerUpdater>().stunsLeft = -1;
     }
 
     //When first spawned and at each campfire
@@ -368,15 +449,7 @@ public partial class Plugin : BaseUnityPlugin
             yield return new WaitForSeconds(5);
 
         //Display The Hunter Is Near
-        StartCoroutine(showHunterTitle());
-        IEnumerator showHunterTitle()
-        {
-            Log.LogDebug("Show Hunter is Near");
-            GameObject hunterNear = Instantiate(hunterNearPrefab, hunterNearPrefab.transform.parent);
-            hunterNear.SetActive(true);
-            yield return new WaitForSeconds(4);
-            Destroy(hunterNear);
-        }
+        StartCoroutine(showMessage(isLocalHunter() ? "COOLDOWN ACTIVE" : "THE HUNTER IS NEAR..."));
 
         if (isLocalHunter())
         {
@@ -394,16 +467,9 @@ public partial class Plugin : BaseUnityPlugin
             float cooldownLength = initialCooldown.Value + additionalCooldown.Value * MapHandler.Instance.currentSegment;
             Log.LogDebug("Hunter Cooldown: " + cooldownLength);
             // Extra wait if people still passed out on beach
-            while (true)
+            while (currSegment == 0 && !playersReadyForHunter())
             {
-                bool flag = true;
-                foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
-                    if (allPlayerCharacter.data.passedOutOnTheBeach > 0)
-                        flag = false;
-                if (flag)
-                    break;
-                else
-                    Log.LogDebug("Waiting for Players to Load on Beach");
+                Log.LogDebug("Waiting for Players to Load on Beach");
                 yield return null;
             }
             yield return new WaitForSeconds(cooldownLength);
@@ -488,11 +554,7 @@ public partial class Plugin : BaseUnityPlugin
                 Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
                 Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f);
                 //Show User that they are now a Hunter
-                GameObject hunterNear = Instantiate(hunterNearPrefab, hunterNearPrefab.transform.parent);
-                hunterNear.transform.Find("Fog").GetComponent<TextMeshProUGUI>().text = "YOU ARE NOW A HUNTER";
-                hunterNear.SetActive(true);
-                yield return new WaitForSeconds(4);
-                Destroy(hunterNear);
+                _.StartCoroutine(_.showMessage("YOU ARE NOW A HUNTER"));
             }
         }
         //Don't return to original method
@@ -566,7 +628,9 @@ public partial class Plugin : BaseUnityPlugin
             float num = Vector3.Distance(attackPos, character.Center);
             if (num < 5)
             {
-                character.Fall(0.1f);
+                //If climbing, doesn't ragdoll
+                if (!character.data.isClimbing)
+                    character.Fall(0.1f);
                 character.AddForce((5 - num) * (character.Center - attackPos).normalized * 133 *
                     _.attackKnockbackMultiplier.Value);
                 //Hunter doesn't get damaged
@@ -576,7 +640,10 @@ public partial class Plugin : BaseUnityPlugin
             }
         }
 
-        __instance.character.UseStamina(_.attackStaminaUsage.Value, true);
+        //Takes from both Extra and Current Stamina in a round about way
+        if (__instance.character.data.currentStamina < _.attackStaminaUsage.Value)
+            __instance.character.AddExtraStamina(_.attackStaminaUsage.Value - __instance.character.data.currentStamina);
+        __instance.character.UseStamina(_.attackStaminaUsage.Value, false);
 
         Log.LogDebug("Hunter Attack!");
     }
