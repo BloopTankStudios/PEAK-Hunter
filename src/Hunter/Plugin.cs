@@ -38,6 +38,8 @@ public partial class Plugin : BaseUnityPlugin
     ConfigEntry<float> initialCooldown;
     ConfigEntry<float> additionalCooldown;
     ConfigEntry<float> extraStamina;
+    ConfigEntry<float> hunterDamageMultiplier;
+    ConfigEntry<float> climberDamageMultiplier;
 
     //Assets
     private static AssetBundle assets;
@@ -57,18 +59,23 @@ public partial class Plugin : BaseUnityPlugin
     {
         //Update on all clients
         [PunRPC]
-        public void RPCA_ChangeRole(Character localCharacter)
+        public void RPCA_ChangeRole(int ActorNumber)
         {
-            if (hunterDatabase.Contains(localCharacter.view.Owner.ActorNumber))
-                hunterDatabase.Remove(localCharacter.view.Owner.ActorNumber);
+            if (hunterDatabase.Contains(ActorNumber))
+                hunterDatabase.Remove(ActorNumber);
             else
-                hunterDatabase.Add(localCharacter.view.Owner.ActorNumber);
+                hunterDatabase.Add(ActorNumber);
         }
     }
 
     private static bool isLocalHunter()
     {
-        return hunterDatabase.Contains(Character.localCharacter.view.Owner.ActorNumber);
+        return isHunter(Character.localCharacter);
+    }
+
+    private static bool isHunter(Character character)
+    {
+        return hunterDatabase.Contains(character.view.Owner.ActorNumber);
     }
 
     //Loads Plugin
@@ -93,6 +100,10 @@ public partial class Plugin : BaseUnityPlugin
             "Increases the amount of Cooldown applied after each Section");
         extraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
             "Applies this extra Stamina when the Hunter is rested");
+        hunterDamageMultiplier = hunterConfigData.Bind("HunterStats", "DamageMultiplier", 0.5f,
+            "Reduced/Increases the amount of Damage the Hunter takes");
+        climberDamageMultiplier = hunterConfigData.Bind("ClimberStats", "DamageMultiplier", 0.5f,
+            "Reduced/Increases the amount of Damage the Climber takes");
         Log.LogDebug("Config File Created");
 
         //Load AssetBundle
@@ -111,6 +122,12 @@ public partial class Plugin : BaseUnityPlugin
 
         // Log our awake here so we can see it in LogOutput.log file
         Log.LogInfo($"Plugin {Name} is loaded!");
+    }
+
+    //Unload assets on Exit
+    private void OnDestroy()
+    {
+        assets.Unload(true);
     }
 
     //---TESTING---
@@ -142,13 +159,16 @@ public partial class Plugin : BaseUnityPlugin
         __instance.gameObject.AddComponent<HunterPlayerUpdater>();
 
         //Add SmallIcon to bottom left
-        smallRoleIcon = new GameObject("UI_RoleIcon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image)).GetComponent<Image>();
-        smallRoleIcon.transform.SetParent(GUIManager.instance.transform.Find("Canvas_HUD/BarGroup/Bar"));
-        smallRoleIcon.transform.localScale = Vector3.one * .5f;
-        smallRoleIcon.GetComponent<RectTransform>().anchoredPosition = new Vector2(-275, 55);
+        if (__instance.IsLocal)
+        {
+            smallRoleIcon = new GameObject("UI_RoleIcon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image)).GetComponent<Image>();
+            smallRoleIcon.transform.SetParent(GUIManager.instance.transform.Find("Canvas_HUD/BarGroup/Bar"));
+            smallRoleIcon.transform.localScale = Vector3.one * .5f;
+            smallRoleIcon.GetComponent<RectTransform>().anchoredPosition = new Vector2(-275, 55);
 
-        smallRoleIcon.sprite = isLocalHunter() ? hunterSprite : climberSprite;
-        Log.LogDebug("Small Role Icon added to HUD");
+            smallRoleIcon.sprite = isLocalHunter() ? hunterSprite : climberSprite;
+            Log.LogDebug("Small Role Icon added to HUD");
+        }
     }
 
     //Add The Hunter Is Near to GUI
@@ -240,7 +260,7 @@ public partial class Plugin : BaseUnityPlugin
     {
         //Set corresponding sprites
         for (int i = 0; i < Character.AllCharacters.Count; i++)
-            __instance.players[i].sprite = hunterDatabase.Contains(Character.AllCharacters[i].view.Owner.ActorNumber) ? hunterSprite : climberSprite;
+            __instance.players[i].sprite = isHunter(Character.AllCharacters[i]) ? hunterSprite : climberSprite;
         Log.LogDebug("Boarding Pass UI Modified");
     }
 
@@ -249,12 +269,12 @@ public partial class Plugin : BaseUnityPlugin
     {
         //Change Role
         bool localIsHunter = !isLocalHunter();
-        Character.localCharacter.view.RPC("RPCA_ChangeRole", RpcTarget.AllBuffered, Character.localCharacter);
+        Character.localCharacter.view.RPC("RPCA_ChangeRole", RpcTarget.AllBuffered, Character.localCharacter.view.Owner.ActorNumber);
 
         //Modify UI
         smallRoleIcon.sprite = localIsHunter ? hunterSprite : climberSprite;
         roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(localIsHunter ? "Hunter_Icon" : "Climber_Icon");
-        roleLabel.text = localIsHunter ? "HUNTER": "CLIMBER";
+        roleLabel.text = localIsHunter ? "HUNTER" : "CLIMBER";
         EventSystem.current.SetSelectedGameObject(null);
 
         //Done
@@ -273,7 +293,7 @@ public partial class Plugin : BaseUnityPlugin
         {
             //Skip Hunters in Check
             if (!(allPlayerCharacter == null) && !allPlayerCharacter.photonView.Owner.IsInactive &&
-                !hunterDatabase.Contains(allPlayerCharacter.photonView.Owner.ActorNumber))
+                !isHunter(allPlayerCharacter))
             {
                 float num = Vector3.Distance(__instance.transform.position, allPlayerCharacter.Center);
                 if (num > 15f && !allPlayerCharacter.data.dead)
@@ -346,6 +366,19 @@ public partial class Plugin : BaseUnityPlugin
             // Wait
             float cooldownLength = initialCooldown.Value + additionalCooldown.Value * MapHandler.Instance.currentSegment;
             Log.LogDebug("Hunter Cooldown: " + cooldownLength);
+            // Extra wait if people still passed out on beach
+            while (true)
+            {
+                bool flag = true;
+                foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
+                    if (allPlayerCharacter.data.passedOutOnTheBeach > 0)
+                        flag = false;
+                if (flag)
+                    break;
+                else
+                    Log.LogDebug("Waiting for Players to Load on Beach");
+                yield return null;
+            }
             yield return new WaitForSeconds(cooldownLength);
 
             //Spawn Hunter
@@ -385,12 +418,12 @@ public partial class Plugin : BaseUnityPlugin
         for (int i = 0; i < Character.AllCharacters.Count; i++)
         {
             //Skip Hunters in Check
-            if (!Character.AllCharacters[i].data.dead && !hunterDatabase.Contains(Character.AllCharacters[i].photonView.Owner.ActorNumber))
+            if (!Character.AllCharacters[i].data.dead && !isHunter(Character.AllCharacters[i]))
             {
                 flag = false;
             }
         }
-        //flag = false;
+        flag = false;
         if (flag)
         {
             if (PhotonNetwork.IsMasterClient)
@@ -407,7 +440,10 @@ public partial class Plugin : BaseUnityPlugin
                 yield return new WaitForSeconds(5);
                 Log.LogDebug("Hunter Respawned");
                 Character.localCharacter.refs.afflictions.UpdateWeight();
-                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), true);
+                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), false);
+                //Custom Effects
+                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
+                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f);
             }
         }
         //Don't return to original method
@@ -446,5 +482,45 @@ public partial class Plugin : BaseUnityPlugin
             if (__instance.data.currentStamina == __instance.GetMaxStamina() && __instance.data.extraStamina < _.extraStamina.Value)
                 __instance.SetExtraStamina(_.extraStamina.Value);
         }
+    }
+
+    [HarmonyPatch(typeof(CharacterAfflictions), nameof(CharacterAfflictions.AddStatus))]
+    [HarmonyPrefix]
+    private static void ModifyHealthPatch(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType, ref float amount, bool fromRPC)
+    {
+        if (statusType != CharacterAfflictions.STATUSTYPE.Injury)
+            return;
+        if (isHunter(__instance.character))
+            amount *= _.hunterDamageMultiplier.Value;
+        else
+            amount *= _.climberDamageMultiplier.Value;
+        Log.LogDebug("Reduced Damage: " + amount);
+    }
+
+    [HarmonyPatch(typeof(CharacterGrabbing), nameof(CharacterGrabbing.RPCA_StartReaching))]
+    [HarmonyPostfix]
+    private static void HunterReachPainPatch(CharacterGrabbing __instance)
+    {
+        if (!isHunter(__instance.character) || __instance.character.GetTotalStamina() < .5)
+            return;
+        //Summons area affect cloud that will push away and hurt anyone in vicinity
+        Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 2;
+        __instance.character.PlayPoofVFX(attackPos);
+
+        foreach (Character character in Character.AllCharacters)
+        {
+            float num = Vector3.Distance(attackPos, character.Center);
+            if (num < 5)
+            {
+                character.AddForce((5 - num) * (character.Center - attackPos).normalized * 10);
+                character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Injury, (5 - num) / 5 * .3f);
+                //WIP - Output from reduced damage is 0.09
+                //WIP - Also there's no pushback :(
+            }
+        }
+
+        __instance.character.UseStamina(.5f, true);
+
+        Log.LogDebug("Hunter Attack!");
     }
 }
