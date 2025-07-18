@@ -12,6 +12,10 @@ using System.Collections.Generic;
 using System.Collections;
 using BepInEx.Configuration;
 using UnityEngine.SceneManagement;
+using Zorro.Settings;
+using UnityEngine.Localization;
+using System.Text.RegularExpressions;
+using Zorro.Settings.UI;
 
 namespace Hunter;
 
@@ -39,8 +43,8 @@ public partial class Plugin : BaseUnityPlugin
     // Gamemode
     ConfigEntry<bool> zombieMode;
     ConfigEntry<bool> pickRandom;
-    ConfigEntry<float> initialCooldown;
-    ConfigEntry<float> additionalCooldown;
+    ConfigEntry<int> initialCooldown;
+    ConfigEntry<int> additionalCooldown;
     // Climber
     ConfigEntry<float> climberExtraStamina;
     ConfigEntry<float> climberDamageMultiplier;
@@ -72,6 +76,30 @@ public partial class Plugin : BaseUnityPlugin
     //Client to Server Updater
     public class HunterPlayerUpdater : MonoBehaviourPun
     {
+        //Update Config Info
+        [PunRPC]
+        public void RPC_RecieveConfigData(string section, string key, object value)
+        {
+            switch (value)
+            {
+                case float f:
+                    ConfigEntry<float> configEntryFloat = (ConfigEntry<float>)_.hunterConfigData[section, key];
+                    configEntryFloat.Value = f;
+                    break;
+                case int i:
+                    ConfigEntry<int> configEntryInt = (ConfigEntry<int>)_.hunterConfigData[section, key];
+                    configEntryInt.Value = i;
+                    break;
+                case bool b:
+                    ConfigEntry<bool> configEntryBool = (ConfigEntry<bool>)_.hunterConfigData[section, key];
+                    configEntryBool.Value = b;
+                    break;
+            }
+            Log.LogDebug("Set \"" + section + " - " + key + "\" to " + value);
+
+            _.UpdateHunterModSettings();
+        }
+
         //Update Roles on all clients
         [PunRPC]
         public void RPCA_ChangeRole(int ActorNumber)
@@ -80,11 +108,6 @@ public partial class Plugin : BaseUnityPlugin
                 hunterDatabase.Remove(ActorNumber);
             else
                 hunterDatabase.Add(ActorNumber);
-
-            //Remove any Extra Stamina buff
-            Character character;
-            PlayerHandler.TryGetCharacter(ActorNumber, out character);
-            character.SetExtraStamina(0);
 
             //Update BoardingPass UI for All
             if (boardingPass != null)
@@ -176,9 +199,9 @@ public partial class Plugin : BaseUnityPlugin
             "When Enabled, once Climbers die, they join the Hunter's Team");
         pickRandom = hunterConfigData.Bind("_Gamemode", "PickRandomHunter", false,
             "Upon Game Start, a random Hunter will be chosen");
-        initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldown", 10f,
+        initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldown", 10,
             "Change the Cooldown of how long the Hunter is knocked out");
-        additionalCooldown = hunterConfigData.Bind("_Gamemode", "AdditionalHunterCooldown", 10f,
+        additionalCooldown = hunterConfigData.Bind("_Gamemode", "AdditionalHunterCooldown", 10,
             "Increases the amount of Cooldown applied after each Section");
         // Climber
         climberExtraStamina = hunterConfigData.Bind("ClimberStats", "ExtraStamina", 0f,
@@ -197,7 +220,7 @@ public partial class Plugin : BaseUnityPlugin
         enableHunterAttack = hunterConfigData.Bind("HunterStats", "EnableHunterAttack", true,
             "Determines if Hunters can use their Right-Click Attack");
         attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackDrowsinessDebuff", 0.5f,
-            "The amount of Regular Stamina needed when the Hunter uses their Attack and amount of Drownsiness Applied");
+            "The amount of Stamina Bar needed when the Hunter uses their Attack and amount of Drownsiness Applied");
         attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 1f,
             "Modifies the amount of Knockback received when within range of the Hunter Attack");
         attackDamage = hunterConfigData.Bind("HunterStats", "AttackMaxDamage", .3f,
@@ -276,6 +299,21 @@ public partial class Plugin : BaseUnityPlugin
             smallRoleIcon.sprite = isLocalHunter() ? hunterSprite : climberSprite;
             Log.LogDebug("Small Role Icon added to HUD");
         }
+
+        //Load Config Data
+        SyncHunterConfigData(__instance);
+    }
+
+    private static void SyncHunterConfigData(Character character)
+    {
+        if (!PhotonNetwork.IsMasterClient)
+            return;
+
+        //Send all data
+        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
+            character.photonView.RPC("RPC_RecieveConfigData", RpcTarget.All, configEntry.Key.Section, configEntry.Key.Key, configEntry.Value.BoxedValue);
+
+        Log.LogDebug("Server: Sent All Config Info");
     }
 
     //Add The Hunter Is Near to GUI
@@ -425,6 +463,25 @@ public partial class Plugin : BaseUnityPlugin
         return false;
     }
 
+    [HarmonyPatch(typeof(BoardingPass), nameof(BoardingPass.StartGame))]
+    [HarmonyPostfix]
+    private static void HunterRandomizerPatch(BoardingPass __instance)
+    {
+        if (!_.pickRandom.Value || !PhotonNetwork.IsMasterClient)
+            return;
+
+        //Reset
+        foreach (Character character in Character.AllCharacters)
+            if (isHunter(character))
+                character.view.RPC("RPCA_ChangeRole", RpcTarget.AllBuffered, Character.localCharacter.view.Owner.ActorNumber);
+
+        //Randomizes who is the Hunter
+        int chosen = Random.Range(0, Character.AllCharacters.Count);
+        Character.AllCharacters[chosen].view.RPC("RPCA_ChangeRole", RpcTarget.AllBuffered, Character.localCharacter.view.Owner.ActorNumber);
+
+        Log.LogDebug("Server: Chosen Random Hunter");
+    }
+
     //Conditions to spawn Hunter
     [HarmonyPatch(typeof(RunManager), nameof(RunManager.StartRun))]
     [HarmonyPatch(typeof(Campfire), nameof(Campfire.Light_Rpc))]
@@ -440,11 +497,13 @@ public partial class Plugin : BaseUnityPlugin
                 Log.LogDebug("Reset Section Progress");
                 currSegment = -1;
                 //Climbers start with blowdart
+                _.spawnBlowgun();
             }
             //Load Section w/ Hunter Cooldown
             _.StartCoroutine(_.LoadNewStage());
         }
-        _.spawnBlowgun();
+        else
+            _.spawnBlowgun();
     }
 
     //When first spawned and at each campfire
@@ -597,12 +656,14 @@ public partial class Plugin : BaseUnityPlugin
     {
         if (isLocalHunter())
         {
-            if (__instance.data.currentStamina == __instance.GetMaxStamina() && __instance.data.extraStamina < _.hunterExtraStamina.Value)
+            if (__instance.data.currentStamina == __instance.GetMaxStamina() &&
+                (SceneManager.GetActiveScene().name == "Airport" || __instance.data.extraStamina < _.hunterExtraStamina.Value))
                 __instance.SetExtraStamina(_.hunterExtraStamina.Value);
         }
         else
         {
-            if (__instance.data.currentStamina == __instance.GetMaxStamina() && __instance.data.extraStamina < _.climberExtraStamina.Value)
+            if (__instance.data.currentStamina == __instance.GetMaxStamina() &&
+                (SceneManager.GetActiveScene().name == "Airport" || __instance.data.extraStamina < _.climberExtraStamina.Value))
                 __instance.SetExtraStamina(_.climberExtraStamina.Value);
         }
     }
@@ -626,7 +687,7 @@ public partial class Plugin : BaseUnityPlugin
     {
         if (!_.enableHunterAttack.Value)
             return;
-        if (!isHunter(__instance.character) || __instance.character.data.currentStamina < _.attackDrowsiness.Value)
+        if (!isHunter(__instance.character) || __instance.character.GetMaxStamina() < _.attackDrowsiness.Value)
             return;
         //Summons area affect cloud that will push away and hurt anyone in vicinity
         Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 1.5f;
@@ -743,6 +804,277 @@ public partial class Plugin : BaseUnityPlugin
             itemUses.Value = 1;
             itemData.data.Remove(DataEntryKey.UseRemainingPercentage);
             Log.LogDebug("Climber Blowdart Recharged");
+        }
+    }
+
+    //Only instantiate once
+    static SettingsTABSButton hunterTab;
+
+    [HarmonyPatch(typeof(SharedSettingsMenu), nameof(SharedSettingsMenu.OnEnable))]
+    [HarmonyPrefix]
+    private static void AddedHunterMenuPatch(SharedSettingsMenu __instance)
+    {
+        //Add tab
+        if (hunterTab == null)
+        {
+            //Create Tab
+            hunterTab = Instantiate(__instance.transform.Find("Content/TABS/General").gameObject, __instance.transform.Find("Content/TABS")).GetComponent<SettingsTABSButton>();
+            hunterTab.name = "Hunter";
+            hunterTab.text.GetComponent<LocalizedText>().enabled = false;
+            hunterTab.text.text = "HUNTER MOD";
+            __instance.m_tabs.AddButton(hunterTab);
+            //Resize Content to Resize Later
+            __instance.transform.Find("Content/Parent").GetComponent<RectTransform>().pivot = new Vector2(0.5f, 1);
+            __instance.transform.Find("Content/Parent").GetComponent<RectTransform>().anchoredPosition = new Vector2(0, -62);
+            Log.LogDebug("Added Hunter Mod Tab");
+        }
+    }
+
+    [HarmonyPatch(typeof(SharedSettingsMenu), nameof(SharedSettingsMenu.RefreshSettings))]
+    [HarmonyPrefix]
+    private static bool HunterMenuSettingsPatch(SharedSettingsMenu __instance)
+    {
+        if (__instance.m_tabs.selectedButton != hunterTab)
+        {
+            //Reset Size
+            __instance.transform.Find("Content/Parent").localScale = Vector3.one * 1;
+            return true;
+        }
+
+        //Resize to fit all
+        __instance.transform.Find("Content/Parent").localScale = Vector3.one * 0.52f;
+
+        //Load Settings
+        __instance.settings.Clear();
+
+        string lastSection = "";
+        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
+        {
+            if (configEntry.Key.Section != lastSection)
+            {
+                __instance.settings.Add(new HunterCategorySetting(configEntry.Key.Section));
+                lastSection = configEntry.Key.Section;
+            }
+            switch (configEntry.Value.BoxedValue)
+            {
+                case float f:
+                    __instance.settings.Add(new HunterNumSetting(configEntry.Key, configEntry.Value, false));
+                    break;
+                case int i:
+                    __instance.settings.Add(new HunterNumSetting(configEntry.Key, configEntry.Value, true));
+                    break;
+                case bool b:
+                    __instance.settings.Add(new HunterBoolSetting(configEntry.Key, (ConfigEntry<bool>)configEntry.Value));
+                    break;
+            }
+        }
+
+        Log.LogDebug("First Pass: Loaded Hunter Tab Options");
+        return false;
+    }
+
+    [HarmonyPatch(typeof(SharedSettingsMenu), nameof(SharedSettingsMenu.ShowSettings))]
+    [HarmonyPostfix]
+    private static void HunterMenuSettingsPostPatch(SharedSettingsMenu __instance)
+    {
+        if (__instance.m_tabs.selectedButton != hunterTab)
+            return;
+
+        //Categories
+        foreach (EnumSettingUI enumSetting in __instance.transform.Find("Content/Parent").GetComponentsInChildren<EnumSettingUI>())
+            if (enumSetting.GetComponentInParent<SettingsUICell>().m_text.text.Contains("CATEGORY"))
+            {
+                enumSetting.GetComponentInParent<SettingsUICell>().m_text.fontSizeMax = 40;
+                enumSetting.gameObject.SetActive(false);
+            }
+
+        //Remove "LOC: "
+        foreach (LocalizedText locText in __instance.transform.Find("Content/Parent").GetComponentsInChildren<LocalizedText>())
+        {
+            locText.enabled = false;
+            locText.tmp.text = locText.currentText.Replace("LOC: ", "");
+        }
+
+        //Disable editing if not Host
+        if (Player.localPlayer != null && !PhotonNetwork.IsMasterClient)
+            foreach (Selectable ui in __instance.transform.Find("Content/Parent").GetComponentsInChildren<Selectable>())
+                ui.interactable = false;
+
+        Log.LogDebug("Second Pass: Loaded Hunter Tab Options");
+    }
+
+    private void UpdateHunterModSettings()
+    {
+        //Not loaded
+        if (hunterTab == null)
+            return;
+
+        //Not on same tab
+        SharedSettingsMenu menu = hunterTab.GetComponentInParent<SharedSettingsMenu>();
+        if (menu.m_tabs.selectedButton != hunterTab)
+            return;
+
+        //Refesh values
+        Transform content = menu.transform.Find("Content/Parent");
+        for (int i = 0; i < content.childCount; i++)
+        {
+            if (content.GetChild(i).GetComponentInChildren<FloatSettingUI>() is FloatSettingUI floatComponent)
+            {
+                floatComponent.slider.SetValueWithoutNotify(((HunterNumSetting)menu.settings[i]).GetValue());
+                floatComponent.inputField.SetTextWithoutNotify(((HunterNumSetting)menu.settings[i]).Expose(floatComponent.slider.value));
+            }
+            else if (content.GetChild(i).GetComponentInChildren<EnumSettingUI>() is EnumSettingUI enumComponent)
+                enumComponent.dropdown.SetValueWithoutNotify(((HunterBoolSetting)menu.settings[i]).GetValue());
+        }
+
+        Log.LogDebug("Hunter Tab Updated");
+    }
+
+    class HunterCategorySetting : OffOnSetting, IExposedSetting
+    {
+        string categoryName;
+
+        public HunterCategorySetting(string categoryName)
+        {
+            this.categoryName = categoryName;
+        }
+
+        public override void ApplyValue()
+        {
+        }
+
+        public string GetCategory()
+        {
+            return "General";
+        }
+
+        public string GetDisplayName()
+        {
+            return "Category: " + Regex.Replace(categoryName, "(?!^)([A-Z])", " $1").Replace("_", "");
+        }
+
+        public override List<LocalizedString> GetLocalizedChoices()
+        {
+            return null;
+        }
+
+        protected override OffOnMode GetDefaultValue()
+        {
+            return OffOnMode.OFF;
+        }
+    }
+
+    class HunterNumSetting : FloatSetting, IExposedSetting
+    {
+        bool isInt;
+        ConfigDefinition configDef;
+        ConfigEntryBase config;
+
+        public HunterNumSetting(ConfigDefinition configDef, ConfigEntryBase config, bool isInt)
+        {
+            this.isInt = isInt;
+            this.configDef = configDef;
+            this.config = config;
+            Value = isInt ? (int)config.BoxedValue : (float)config.BoxedValue;
+            //Load Method
+            Unity.Mathematics.float2 minMaxValue = GetMinMaxValue();
+            MinValue = minMaxValue.x;
+            MaxValue = minMaxValue.y;
+        }
+
+        public override void ApplyValue()
+        {
+            if (isInt)
+                ((ConfigEntry<int>)config).Value = (int)Value;
+            else
+                ((ConfigEntry<float>)config).Value = Value;
+            if (Character.localCharacter != null)
+            {
+                Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configDef.Section, configDef.Key, config.BoxedValue);
+                Log.LogDebug("Server: Sent Config Info");
+            }
+        }
+
+        public float GetValue()
+        {
+            return isInt ? (int)config.BoxedValue : (float)config.BoxedValue;
+        }
+
+        public string GetCategory()
+        {
+            return "General";
+        }
+
+        public string GetDisplayName()
+        {
+            return Regex.Replace(configDef.Key, "(?!^)([A-Z])", " $1");
+        }
+
+        protected override float GetDefaultValue()
+        {
+            return (float)(isInt ? (int)config.DefaultValue : config.DefaultValue);
+        }
+
+        protected override Unity.Mathematics.float2 GetMinMaxValue()
+        {
+            switch (configDef.Key)
+            {
+                case "InitialHunterCooldown":
+                case "AdditionalHunterCooldown":
+                    return new Unity.Mathematics.float2(0, 100);
+                case "FallDamageMultiplier":
+                    return new Unity.Mathematics.float2(0, 2);
+                case "BlowgunCooldown":
+                    return new Unity.Mathematics.float2(0, 600);
+                case "AttackKnockbackMultiplier":
+                    return new Unity.Mathematics.float2(0, 10);
+                default:
+                    return new Unity.Mathematics.float2(0, 1);
+            }
+        }
+
+    }
+
+    class HunterBoolSetting : OffOnSetting, IExposedSetting
+    {
+        ConfigDefinition configDef;
+        ConfigEntry<bool> config;
+
+        public HunterBoolSetting(ConfigDefinition configDef, ConfigEntry<bool> config)
+        {
+            this.configDef = configDef;
+            this.config = config;
+            Value = config.Value ? OffOnMode.ON : OffOnMode.OFF;
+        }
+
+        public override void ApplyValue()
+        {
+            config.Value = Value == OffOnMode.ON;
+            if (Character.localCharacter != null)
+            {
+                Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configDef.Section, configDef.Key, config.Value);
+                Log.LogDebug("Server: Sent Config Info");
+            }
+        }
+
+        public string GetCategory()
+        {
+            return "General";
+        }
+
+        public string GetDisplayName()
+        {
+            return Regex.Replace(configDef.Key, "(?!^)([A-Z])", " $1");
+        }
+
+        public override List<LocalizedString> GetLocalizedChoices()
+        {
+            return null;
+        }
+
+        protected override OffOnMode GetDefaultValue()
+        {
+            return (bool)config.DefaultValue ? OffOnMode.ON : OffOnMode.OFF;
         }
     }
 }
