@@ -38,17 +38,19 @@ public partial class Plugin : BaseUnityPlugin
     ConfigFile hunterConfigData = new ConfigFile(Path.Combine(Paths.ConfigPath, "BT_Hunter.cfg"), true);
     // Gamemode
     ConfigEntry<bool> zombieMode;
+    ConfigEntry<bool> pickRandom;
     ConfigEntry<float> initialCooldown;
     ConfigEntry<float> additionalCooldown;
     // Climber
     ConfigEntry<float> climberExtraStamina;
     ConfigEntry<float> climberDamageMultiplier;
-    ConfigEntry<int> hunterStunAmount;
-    ConfigEntry<float> stunTime;
+    ConfigEntry<bool> startWithBlowgun;
+    ConfigEntry<int> blowgunCooldown;
     // Hunter
     ConfigEntry<float> hunterExtraStamina;
     ConfigEntry<float> hunterDamageMultiplier;
-    ConfigEntry<float> attackStaminaUsage;
+    ConfigEntry<bool> enableHunterAttack;
+    ConfigEntry<float> attackDrowsiness;
     ConfigEntry<float> attackKnockbackMultiplier;
     ConfigEntry<float> attackDamage;
 
@@ -70,8 +72,6 @@ public partial class Plugin : BaseUnityPlugin
     //Client to Server Updater
     public class HunterPlayerUpdater : MonoBehaviourPun
     {
-        public int stunsLeft = 0;
-
         //Update Roles on all clients
         [PunRPC]
         public void RPCA_ChangeRole(int ActorNumber)
@@ -91,16 +91,22 @@ public partial class Plugin : BaseUnityPlugin
                 BoardingPassUIPatch(boardingPass);
         }
 
-        //Use Global Hunter Stun
+        //Attach Special Component to Reusable Blowgun
         [PunRPC]
-        public void RPCA_GlobalStun()
+        public void RPCA_EquippedBlowgun()
         {
-            if (stunsLeft == 0)
-                return;
-            stunsLeft--;
-
-            StartCoroutine(_.showMessage(isLocalHunter() ? "STUN ACTIVATED" : "HUNTERS STUNNED"));
-            
+            //Log.LogDebug("TEST " + Character.localCharacter.data.currentItem.GetItemName());
+            //Character.localCharacter.data.currentItem.gameObject.AddComponent<ReusableBlowgun>();
+            Item item = Character.localCharacter.data.currentItem;
+            //Set as Custom Item
+            OptionableIntItemData specificIntItemData = item.GetData<OptionableIntItemData>(DataEntryKey.INVALID);
+            specificIntItemData.HasData = true;
+            specificIntItemData.Value = 1;
+            //Set uses as for some reason base code doesn't
+            OptionableIntItemData optionableIntItemData = item.GetData<OptionableIntItemData>(DataEntryKey.ItemUses);
+            optionableIntItemData.HasData = true;
+            optionableIntItemData.Value = item.totalUses;
+            Log.LogDebug("Client: Modified Blowgun Data");
         }
     }
 
@@ -168,6 +174,8 @@ public partial class Plugin : BaseUnityPlugin
         // Gamemode
         zombieMode = hunterConfigData.Bind("_Gamemode", "ZombieMode", false,
             "When Enabled, once Climbers die, they join the Hunter's Team");
+        pickRandom = hunterConfigData.Bind("_Gamemode", "PickRandomHunter", false,
+            "Upon Game Start, a random Hunter will be chosen");
         initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldown", 10f,
             "Change the Cooldown of how long the Hunter is knocked out");
         additionalCooldown = hunterConfigData.Bind("_Gamemode", "AdditionalHunterCooldown", 10f,
@@ -177,17 +185,19 @@ public partial class Plugin : BaseUnityPlugin
             "Applies this extra Stamina when the Climber is rested");
         climberDamageMultiplier = hunterConfigData.Bind("ClimberStats", "FallDamageMultiplier", 0.5f,
             "Reduced/Increases the amount of Damage the Climber takes. (Not Including the Hunter Attack)");
-        hunterStunAmount = hunterConfigData.Bind("ClimberStats", "HunterStunAmount", 1,
-            "Number of Emergency Global Stuns each Climber gets");
-        stunTime = hunterConfigData.Bind("ClimberStats", "StunTime", 10f,
-            "How long the Stun lasts on Hunters");
+        startWithBlowgun = hunterConfigData.Bind("ClimberStats", "StartWithBlowgun", true,
+            "Determines if Climbers start with a Blowdart");
+        blowgunCooldown = hunterConfigData.Bind("ClimberStats", "BlowgunCooldown", 120,
+            "When the Blowgun will be usable again");
         // Hunter
         hunterExtraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
             "Applies this extra Stamina when the Hunter is rested");
         hunterDamageMultiplier = hunterConfigData.Bind("HunterStats", "FallDamageMultiplier", 0.5f,
             "Reduced/Increases the amount of Damage the Hunter takes");
-        attackStaminaUsage = hunterConfigData.Bind("HunterStats", "AttackStaminaUsage", 0.5f,
-            "The amount of Stamina needed when the Hunter uses their Attack");
+        enableHunterAttack = hunterConfigData.Bind("HunterStats", "EnableHunterAttack", true,
+            "Determines if Hunters can use their Right-Click Attack");
+        attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackDrowsinessDebuff", 0.5f,
+            "The amount of Regular Stamina needed when the Hunter uses their Attack and amount of Drownsiness Applied");
         attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 1f,
             "Modifies the amount of Knockback received when within range of the Hunter Attack");
         attackDamage = hunterConfigData.Bind("HunterStats", "AttackMaxDamage", .3f,
@@ -219,7 +229,7 @@ public partial class Plugin : BaseUnityPlugin
     }
 
     //---TESTING---
-    private void Update()
+    /*private void Update()
     {
         //Spawn to next Target
         if (Input.GetKeyDown(KeyCode.G))
@@ -240,7 +250,7 @@ public partial class Plugin : BaseUnityPlugin
 
         //if (!playersReadyForHunter())
         //    Log.LogDebug("Players Not Ready");
-    }
+    }*/
 
     //Add Database Updater Code on Photon Player
     [HarmonyPatch(typeof(Character), nameof(Character.Awake))]
@@ -429,20 +439,17 @@ public partial class Plugin : BaseUnityPlugin
             {
                 Log.LogDebug("Reset Section Progress");
                 currSegment = -1;
-                foreach (Character character in Character.AllCharacters)
-                    character.GetComponent<HunterPlayerUpdater>().stunsLeft = -1;
+                //Climbers start with blowdart
             }
             //Load Section w/ Hunter Cooldown
             _.StartCoroutine(_.LoadNewStage());
         }
-        else
-            foreach (Character character in Character.AllCharacters)
-                character.GetComponent<HunterPlayerUpdater>().stunsLeft = -1;
+        _.spawnBlowgun();
     }
 
     //When first spawned and at each campfire
     static int currSegment = -1;
-    public IEnumerator LoadNewStage()
+    private IEnumerator LoadNewStage()
     {
         currSegment++;
         if (currSegment == 0)
@@ -617,21 +624,26 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPostfix]
     private static void HunterReachAttackPatch(CharacterGrabbing __instance)
     {
-        if (!isHunter(__instance.character) || __instance.character.GetTotalStamina() < _.attackStaminaUsage.Value)
+        if (!_.enableHunterAttack.Value)
+            return;
+        if (!isHunter(__instance.character) || __instance.character.data.currentStamina < _.attackDrowsiness.Value)
             return;
         //Summons area affect cloud that will push away and hurt anyone in vicinity
-        Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 1.25f;
+        Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 1.5f;
         __instance.character.PlayPoofVFX(attackPos);
 
         foreach (Character character in Character.AllCharacters)
         {
+            if (character == __instance.character)
+                continue;
+
             float num = Vector3.Distance(attackPos, character.Center);
             if (num < 5)
             {
                 //If climbing, doesn't ragdoll
                 if (!character.data.isClimbing)
                     character.Fall(0.1f);
-                character.AddForce((5 - num) * (character.Center - attackPos).normalized * 133 *
+                character.AddForce((5 - num) * (character.Center - __instance.character.Center).normalized * 133 *
                     _.attackKnockbackMultiplier.Value);
                 //Hunter doesn't get damaged
                 if (!isHunter(character))
@@ -640,11 +652,97 @@ public partial class Plugin : BaseUnityPlugin
             }
         }
 
-        //Takes from both Extra and Current Stamina in a round about way
-        if (__instance.character.data.currentStamina < _.attackStaminaUsage.Value)
-            __instance.character.AddExtraStamina(_.attackStaminaUsage.Value - __instance.character.data.currentStamina);
-        __instance.character.UseStamina(_.attackStaminaUsage.Value, false);
+        //Seperate Force added to User
+        __instance.character.Fall(0.1f);
+        __instance.character.AddForce((5 - 1.5f) * (__instance.character.Center - attackPos).normalized * 133 *
+            _.attackKnockbackMultiplier.Value);
+
+        //Gives Drowsiness to Hunter
+        __instance.character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Drowsy, _.attackDrowsiness.Value);
 
         Log.LogDebug("Hunter Attack!");
+    }
+
+    private void spawnBlowgun()
+    {
+        if (!PhotonNetwork.IsMasterClient)
+            return;
+
+        //Debug - Print All Item Prefab Names
+        //foreach (Item item in ItemDatabase.Instance.itemLookup.Values)
+        //    Log.LogDebug(item.name);
+
+        //Give Blowgun to Climbers
+        foreach (Character character in Character.AllCharacters)
+        {
+            if (isHunter(character))
+                return;
+
+            Item component = PhotonNetwork.InstantiateItemRoom("HealingDart Variant", character.transform.position, character.transform.rotation).GetComponent<Item>();
+            //Auto Pickup
+            component.RequestPickup(character.GetComponent<PhotonView>());
+            //Attach special component on all Clients
+            character.view.RPC("RPCA_EquippedBlowgun", RpcTarget.All);
+        }
+
+        Log.LogDebug("Server: Spawned Blowgun for Travelers");
+    }
+
+    [HarmonyPatch(typeof(Item), nameof(Item.GetItemName))]
+    [HarmonyPostfix]
+    private static void BlowgunRenamePatch(Item __instance, ItemInstanceData data, ref string __result)
+    {
+        //Sneaky way to track Reusable Blowgun
+        ItemInstanceData itemData = data;
+        if (itemData == null)
+            itemData = __instance.data;
+        OptionableIntItemData specificIntItemData;
+        if (!itemData.TryGetDataEntry(DataEntryKey.INVALID, out specificIntItemData) || specificIntItemData.Value != 1)
+            return;
+
+        //Rename
+        __result = "REUSABLE " + __result;
+
+        return;
+    }
+
+    [HarmonyPatch(typeof(Item), nameof(Item.Consume))]
+    [HarmonyPrefix]
+    private static bool BlowgunReusePatch(Item __instance)
+    {
+        //Sneaky way to track Reusable Blowgun
+        OptionableIntItemData specificIntItemData = __instance.GetData<OptionableIntItemData>(DataEntryKey.INVALID);
+        if (!specificIntItemData.HasData || specificIntItemData.Value != 1)
+            return true;
+
+        __instance.SetUseRemainingPercentage(0);
+
+        //Don't consume and instead wait to give use back
+        _.StartCoroutine(_.itemCooldown(__instance.data));
+        Log.LogDebug("Climber Blowdart on Recharge");
+
+        return false;
+    }
+
+    private IEnumerator itemCooldown(ItemInstanceData itemData)
+    {
+        //Slowly Recharge
+        FloatItemData regainedUsage;
+        itemData.TryGetDataEntry(DataEntryKey.UseRemainingPercentage, out regainedUsage);
+        while (regainedUsage.Value < 1 && itemData != null)
+        {
+            yield return new WaitForSeconds(1);
+            regainedUsage.Value += 1f / _.blowgunCooldown.Value;
+        }
+
+        //Fully recharged
+        if (itemData != null)
+        {
+            OptionableIntItemData itemUses;
+            itemData.TryGetDataEntry(DataEntryKey.ItemUses, out itemUses);
+            itemUses.Value = 1;
+            itemData.data.Remove(DataEntryKey.UseRemainingPercentage);
+            Log.LogDebug("Climber Blowdart Recharged");
+        }
     }
 }
