@@ -637,9 +637,9 @@ public partial class Plugin : BaseUnityPlugin
         Vector3 spawnPosition;
         switch ((Segment)sectionNum)
         {
-            case Segment.TheKiln:
+            /*case Segment.TheKiln:
                 spawnPosition = MapHandler.Instance.respawnTheKiln.position;
-                break;
+                break;*/
             case Segment.Peak:
                 spawnPosition = MapHandler.Instance.respawnThePeak.position;
                 break;
