@@ -114,7 +114,7 @@ public partial class Plugin : BaseUnityPlugin
         {
             if (!isHunter && hunterDatabase.Contains(ActorNumber))
                 hunterDatabase.Remove(ActorNumber);
-            else if (isHunter)
+            else if (isHunter && !hunterDatabase.Contains(ActorNumber))
                 hunterDatabase.Add(ActorNumber);
 
             //Update BoardingPass UI for All
@@ -124,7 +124,7 @@ public partial class Plugin : BaseUnityPlugin
 
         //Server creates Blowgun
         [PunRPC]
-        public void RPC_SpawnBlowgun(Character character, bool ignoreHunter)
+        public void RPC_SpawnBlowgun(int actorNumber, bool ignoreHunter)
         {
             if (_.startWithBlowgun.Value && PhotonNetwork.IsMasterClient)
             {
@@ -133,17 +133,26 @@ public partial class Plugin : BaseUnityPlugin
                 {
                     yield return new WaitForSeconds(5);
 
-                    //Give Blowgun to 1 Random Climber
-                    if ((!isHunter(character) && character.view.Owner.ActorNumber == randomBlowgunRunner) || ignoreHunter)
-                    {
-                        Item component = PhotonNetwork.InstantiateItemRoom("HealingDart Variant", character.transform.position, character.transform.rotation).GetComponent<Item>();
-                        //Auto Pickup
-                        component.RequestPickup(character.GetComponent<PhotonView>());
-                        //Attach special component on all Clients
-                        character.view.RPC("RPCA_EquippedBlowgun", RpcTarget.All);
-                    }
+                    //Get correct character
+                    Character character = null;
+                    foreach (Character charac in Character.AllCharacters)
+                        if (charac.view.Owner.ActorNumber == actorNumber)
+                            character = charac;
 
-                    Log.LogDebug("Server: Spawned Blowgun for Traveler");
+                    if (character != null)
+                    {
+                        //Give Blowgun to 1 Random Climber
+                        if ((!isHunter(character) && actorNumber == randomBlowgunRunner) || ignoreHunter)
+                        {
+                            Item component = PhotonNetwork.InstantiateItemRoom("HealingDart Variant", character.transform.position, character.transform.rotation).GetComponent<Item>();
+                            //Auto Pickup
+                            component.RequestPickup(character.GetComponent<PhotonView>());
+                            //Attach special component on all Clients
+                            character.view.RPC("RPCA_EquippedBlowgun", RpcTarget.All);
+                        }
+
+                        Log.LogDebug("Server: Spawned Blowgun for Traveler");
+                    }
                 }
             }
         }
@@ -253,7 +262,7 @@ public partial class Plugin : BaseUnityPlugin
             "Reduced/Increases the amount of Damage the Hunter takes");
         enableHunterAttack = hunterConfigData.Bind("HunterStats", "EnableHunterAttack", true,
             "Determines if Hunters can use their Right-Click Attack");
-        attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackDrowsinessDebuff", 0.5f,
+        attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackStamina/DrowsinessDebuff", 0.5f,
             "The amount of Stamina Bar needed when the Hunter uses their Attack and amount of Drownsiness Applied");
         attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 1f,
             "Modifies the amount of Knockback received when within range of the Hunter Attack");
@@ -347,9 +356,9 @@ public partial class Plugin : BaseUnityPlugin
         //Reset Static Values
         if (character.IsLocal && SceneManager.GetActiveScene().name == "Airport")
         {
-            playersReady = new Dictionary<int, bool>();
+            playersReady.Clear();
             randomBlowgunRunner = -1;
-            hunterDatabase = new List<int>();
+            hunterDatabase.Clear();
             hunterCooldown = -10000;
         }
 
@@ -535,6 +544,7 @@ public partial class Plugin : BaseUnityPlugin
         }
 
         //Randomizes who gets the Blowgun
+        Log.LogDebug("Runners Total: " + (Character.AllCharacters.Count - hunterDatabase.Count));
         if (Character.AllCharacters.Count - hunterDatabase.Count > 0)
         {
             int chosen2 = Random.Range(0, Character.AllCharacters.Count - hunterDatabase.Count);
@@ -561,14 +571,14 @@ public partial class Plugin : BaseUnityPlugin
             if (MapHandler.Instance.currentSegment == 0)
             {
                 //Climbers start with blowdart
-                Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter, false);
+                Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, false);
             }
             //Load Section w/ Hunter Cooldown
             _.StartCoroutine(_.LoadNewStage());
         }
         //Spawn with blowgun in lobby
         else
-            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter, true);
+            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, true);
     }
 
     //When first spawned and at each campfire
@@ -791,8 +801,11 @@ public partial class Plugin : BaseUnityPlugin
                     if (!System.Enum.TryParse(_.attackType.Value, false, out affliction))
                         affliction = CharacterAfflictions.STATUSTYPE.Injury;
 
-                    character.refs.afflictions.AddStatus(affliction, (5 - num) / 5 *
-                        _.attackAmount.Value / _.climberDamageMultiplier.Value);
+                    float attackValue = (5 - num) / 5 * _.attackAmount.Value;
+                    //Remove the damage multiplier for Hunter Attack
+                    if (affliction == CharacterAfflictions.STATUSTYPE.Injury)
+                        attackValue /= _.climberDamageMultiplier.Value;
+                    character.refs.afflictions.AddStatus(affliction, attackValue);
                 }
             }
         }
