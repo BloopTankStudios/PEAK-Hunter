@@ -141,17 +141,17 @@ public partial class Plugin : BaseUnityPlugin
 
                     if (character != null)
                     {
+                        Log.LogDebug("Server: Try give blowgun to " + character.characterName);
+
                         //Give Blowgun to 1 Random Climber
                         if ((!isHunter(character) && actorNumber == randomBlowgunRunner) || ignoreHunter)
                         {
                             Item component = PhotonNetwork.InstantiateItemRoom("HealingDart Variant", character.transform.position, character.transform.rotation).GetComponent<Item>();
-                            //Auto Pickup
-                            component.RequestPickup(character.GetComponent<PhotonView>());
                             //Attach special component on all Clients
-                            character.view.RPC("RPCA_EquippedBlowgun", RpcTarget.All);
-                        }
+                            character.view.RPC("RPCA_EquippedBlowgun", RpcTarget.All, character.GetComponent<PhotonView>(), component.GetComponent<PhotonView>());
 
-                        Log.LogDebug("Server: Spawned Blowgun for Traveler");
+                            Log.LogDebug("Server: Spawned Blowgun for Traveler");
+                        }
                     }
                 }
             }
@@ -159,18 +159,25 @@ public partial class Plugin : BaseUnityPlugin
 
         //Attach Special Component to Reusable Blowgun
         [PunRPC]
-        public void RPCA_EquippedBlowgun()
+        public void RPCA_EquippedBlowgun(PhotonView characterView, PhotonView itemView)
         {
-            Item item = Character.localCharacter.data.currentItem;
-            //Set as Custom Item
-            OptionableIntItemData specificIntItemData = item.GetData<OptionableIntItemData>(DataEntryKey.INVALID);
-            specificIntItemData.HasData = true;
-            specificIntItemData.Value = 1;
-            //Set uses as for some reason base code doesn't
-            OptionableIntItemData optionableIntItemData = item.GetData<OptionableIntItemData>(DataEntryKey.ItemUses);
-            optionableIntItemData.HasData = true;
-            optionableIntItemData.Value = item.totalUses;
-            Log.LogDebug("Client: Modified Blowgun Data");
+            Item item = itemView.GetComponent<Item>();
+
+            StartCoroutine(waitForItemLoad());
+            IEnumerator waitForItemLoad()
+            {
+                yield return new WaitUntil(() => item.data != null);
+                OptionableIntItemData invalidData = new OptionableIntItemData();
+                invalidData.HasData = true;
+                invalidData.Value = 1;
+                item.data.RegisterEntry(DataEntryKey.INVALID, invalidData);
+                Log.LogDebug("Client: Modified Blowgun Data");
+
+                //Auto Pickup
+                yield return null;
+                if (PhotonNetwork.IsMasterClient)
+                    item.RequestPickup(characterView);
+            }
         }
     }
 
@@ -253,7 +260,7 @@ public partial class Plugin : BaseUnityPlugin
             "Reduced/Increases the amount of Damage the Climber takes. (Not Including the Hunter Attack)");
         startWithBlowgun = hunterConfigData.Bind("ClimberStats", "StartWithBlowgun", true,
             "Determines if 1 Random Climber starts with a Blowdart");
-        blowgunCooldown = hunterConfigData.Bind("ClimberStats", "BlowgunCooldown", 120,
+        blowgunCooldown = hunterConfigData.Bind("ClimberStats", "BlowgunCooldown", 240,
             "When the Blowgun will be usable again");
         // Hunter
         hunterExtraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
@@ -360,6 +367,7 @@ public partial class Plugin : BaseUnityPlugin
             randomBlowgunRunner = -1;
             hunterDatabase.Clear();
             hunterCooldown = -10000;
+            Log.LogDebug("RESETTING STATIC VALUES");
         }
 
         if (!PhotonNetwork.IsMasterClient)
@@ -489,7 +497,7 @@ public partial class Plugin : BaseUnityPlugin
         }
 
         //Done
-        Log.LogDebug("Role Changed");
+        Log.LogDebug("Role Changed -> " + (localIsHunter ? "HUNTER" : "CLIMBER"));
     }
 
     //Allows lighting of campfire without Hunter
@@ -547,13 +555,15 @@ public partial class Plugin : BaseUnityPlugin
         Log.LogDebug("Runners Total: " + (Character.AllCharacters.Count - hunterDatabase.Count));
         if (Character.AllCharacters.Count - hunterDatabase.Count > 0)
         {
-            int chosen2 = Random.Range(0, Character.AllCharacters.Count - hunterDatabase.Count);
-            hunterDatabase.Sort();
-            foreach (int hunterNum in hunterDatabase)
-                if (chosen2 >= hunterNum)
-                    chosen2++;
-            randomBlowgunRunner = Character.AllCharacters[chosen2].view.Owner.ActorNumber;
+            //Randomizes till picks one who isn't a hunter
+            int chosen2;
+            do
+            {
+                chosen2 = Random.Range(0, Character.AllCharacters.Count);
+            }
+            while (isHunter(Character.AllCharacters[chosen2]));
 
+            randomBlowgunRunner = Character.AllCharacters[chosen2].view.Owner.ActorNumber;
             Log.LogDebug("Server: Chosen Random Blowgun Runner");
         }
     }
@@ -756,13 +766,10 @@ public partial class Plugin : BaseUnityPlugin
         if (isHunter(__instance.character))
         {
             amount *= _.hunterDamageMultiplier.Value;
-            //Null fall damage once for 7 seconds after respawning
+            //Null fall damage for 7 seconds after respawning
             if (hunterCooldown - Time.time > -7)
-            {
-                hunterCooldown = -10000;
                 amount = 0;
-            }
-            Log.LogDebug(hunterCooldown - Time.time);
+            Log.LogDebug("Time since hunterCooldown: " + (hunterCooldown - Time.time));
         }
         else
             amount *= _.climberDamageMultiplier.Value;
