@@ -531,9 +531,9 @@ public partial class Plugin : BaseUnityPlugin
         return false;
     }
 
-    [HarmonyPatch(typeof(BoardingPass), nameof(BoardingPass.StartGame))]
+    [HarmonyPatch(typeof(AirportCheckInKiosk), nameof(AirportCheckInKiosk.LoadIslandMaster))]
     [HarmonyPostfix]
-    private static void HunterRandomizerPatch(BoardingPass __instance)
+    private static void HunterRandomizerPatch(AirportCheckInKiosk __instance)
     {
         if (!PhotonNetwork.IsMasterClient)
             return;
@@ -564,7 +564,7 @@ public partial class Plugin : BaseUnityPlugin
             while (isHunter(Character.AllCharacters[chosen2]));
 
             randomBlowgunRunner = Character.AllCharacters[chosen2].view.Owner.ActorNumber;
-            Log.LogDebug("Server: Chosen Random Blowgun Runner");
+            Log.LogDebug("Server: Chosen Random Blowgun Runner -> " + randomBlowgunRunner + ": " + Character.AllCharacters[chosen2].characterName);
         }
     }
 
@@ -668,6 +668,7 @@ public partial class Plugin : BaseUnityPlugin
                 flag = false;
             }
         }
+        //Debug: Do not end game
         //flag = false;
         if (flag)
         {
@@ -906,6 +907,8 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPrefix]
     private static bool HuntersNotDeadPatch(ref bool __result)
     {
+        __result = false;
+
         //Modified from original PlayerIsDeadOrDown Function
         foreach (Character allCharacter in Character.AllCharacters)
         {
@@ -915,8 +918,6 @@ public partial class Plugin : BaseUnityPlugin
                 __result = true;
             }
         }
-
-        __result = false;
 
         //Do not return to original method
         return false;
