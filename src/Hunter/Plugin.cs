@@ -52,7 +52,7 @@ public partial class Plugin : BaseUnityPlugin
     ConfigEntry<float> climberExtraStamina;
     ConfigEntry<float> climberDamageMultiplier;
     ConfigEntry<bool> startWithBlowgun;
-    ConfigEntry<int> blowgunCooldown;
+    ConfigEntry<float> blowgunCooldown;
     // Hunter
     ConfigEntry<float> hunterExtraStamina;
     ConfigEntry<float> hunterDamageMultiplier;
@@ -71,11 +71,12 @@ public partial class Plugin : BaseUnityPlugin
     private static Image smallRoleIcon;
     private static GameObject hunterNearPrefab;
     //PassportUI
-    private static GameObject roleUIElement;
     private static TextMeshProUGUI roleLabel;
     private static Button roleSwitcher;
     //BoardingPassUI
     private static BoardingPass boardingPass;
+    //Menu UI
+    static SettingsTABSButton hunterTab;
 
     //Client to Server Updater
     public class HunterPlayerUpdater : MonoBehaviourPun
@@ -249,7 +250,7 @@ public partial class Plugin : BaseUnityPlugin
             "Upon Game Start, a random Hunter will be chosen");
         initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldown", 10,
             "Change the Cooldown of how long the Hunter is knocked out");
-        additionalCooldown = hunterConfigData.Bind("_Gamemode", "AdditionalHunterCooldown", 10,
+        additionalCooldown = hunterConfigData.Bind("_Gamemode", "AddedCooldownPerSection", 3,
             "Increases the amount of Cooldown applied after each Section");
         disableScoutmaster = hunterConfigData.Bind("_Gamemode", "DisableScoutmaster", true,
             "Scoutmaster may be problematic with Hunter/Climber strategies!");
@@ -260,7 +261,7 @@ public partial class Plugin : BaseUnityPlugin
             "Reduced/Increases the amount of Damage the Climber takes. (Not Including the Hunter Attack)");
         startWithBlowgun = hunterConfigData.Bind("ClimberStats", "StartWithBlowgun", true,
             "Determines if 1 Random Climber starts with a Blowdart");
-        blowgunCooldown = hunterConfigData.Bind("ClimberStats", "BlowgunCooldown", 240,
+        blowgunCooldown = hunterConfigData.Bind("ClimberStats", "BlowgunCooldownInMins", 7f,
             "When the Blowgun will be usable again");
         // Hunter
         hunterExtraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
@@ -271,12 +272,12 @@ public partial class Plugin : BaseUnityPlugin
             "Determines if Hunters can use their Right-Click Attack");
         attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackStamina/DrowsinessDebuff", 0.5f,
             "The amount of Stamina Bar needed when the Hunter uses their Attack and amount of Drownsiness Applied");
-        attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 1f,
+        attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 2f,
             "Modifies the amount of Knockback received when within range of the Hunter Attack");
-        attackType = hunterConfigData.Bind("HunterStats", "AttackType", "Injury",
+        attackType = hunterConfigData.Bind("HunterStats", "AttackType", "Curse",
             "The type of Afflication that can be received by Runners when within range of the Hunter Attack. " +
             "[Injury, Hunger, Cold, Poison, Crab, Curse, Drowzy, Weight, Hot, Thorns]");
-        attackAmount = hunterConfigData.Bind("HunterStats", "AttackMaxAffliction", .3f,
+        attackAmount = hunterConfigData.Bind("HunterStats", "AttackMaxAffliction", .1f,
             "The amount of Max Afflication Amount that can be received when within range of the Hunter Attack");
         Log.LogDebug("Config File Created");
 
@@ -337,7 +338,7 @@ public partial class Plugin : BaseUnityPlugin
         __instance.gameObject.AddComponent<HunterPlayerUpdater>();
 
         //Load Config Data
-        SyncHunterConfigData(__instance);
+        SyncPlayerData(__instance);
 
         //Add if player is loaded/ready to begin Hunter scene
         if (SceneManager.GetActiveScene().name == "Airport")
@@ -358,7 +359,7 @@ public partial class Plugin : BaseUnityPlugin
         }
     }
 
-    private static void SyncHunterConfigData(Character character)
+    private static void SyncPlayerData(Character character)
     {
         //Reset Static Values
         if (character.IsLocal && SceneManager.GetActiveScene().name == "Airport")
@@ -367,6 +368,8 @@ public partial class Plugin : BaseUnityPlugin
             randomBlowgunRunner = -1;
             hunterDatabase.Clear();
             hunterCooldown = -10000;
+            roleSwitcher = null;
+            boardingPass = null;
             Log.LogDebug("RESETTING STATIC VALUES");
         }
 
@@ -374,12 +377,12 @@ public partial class Plugin : BaseUnityPlugin
             return;
 
         //Send all data
-        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
-            character.photonView.RPC("RPC_RecieveConfigData", RpcTarget.All, configEntry.Key.Section, configEntry.Key.Key, configEntry.Value.BoxedValue);
-            
         if (SceneManager.GetActiveScene().name == "Airport")
             foreach (Character charac in Character.AllCharacters)
-                charac.view.RPC("RPCA_ChangeRole", RpcTarget.All, charac.view.Owner.ActorNumber, isHunter(charac));
+                character.view.RPC("RPCA_ChangeRole", RpcTarget.Others, charac.view.Owner.ActorNumber, isHunter(charac));
+
+        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
+            character.photonView.RPC("RPC_RecieveConfigData", RpcTarget.Others, configEntry.Key.Section, configEntry.Key.Key, configEntry.Value.BoxedValue);
 
         Log.LogDebug("Server: Sent All Config Info");
     }
@@ -401,7 +404,7 @@ public partial class Plugin : BaseUnityPlugin
     private static void PassportUIPatch(PassportManager __instance)
     {
         //Base Element
-        roleUIElement = Instantiate(__instance.transform.Find("PassportUI/Canvas/Panel/Panel/BG/UI_Close").gameObject);
+        GameObject roleUIElement = Instantiate(__instance.transform.Find("PassportUI/Canvas/Panel/Panel/BG/UI_Close").gameObject);
         roleUIElement.name = "UI_Role";
 
         //Positioning
@@ -592,11 +595,9 @@ public partial class Plugin : BaseUnityPlugin
     }
 
     //When first spawned and at each campfire
-    static int currSegment = -1;
     private IEnumerator LoadNewStage()
     {
-        //currSegment++;
-        currSegment = MapHandler.Instance.currentSegment;
+        int currSegment = MapHandler.Instance.currentSegment;
         if (currSegment == 0)
             yield return new WaitForSeconds(5);
 
@@ -631,7 +632,7 @@ public partial class Plugin : BaseUnityPlugin
             Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, RespawnCharacterPos(false), true);
 
             // Refresh except Curse again in case fell or other afflictions
-            Character.localCharacter.refs.items.DropAllItems(true);
+            //Character.localCharacter.refs.items.DropAllItems(true);
             afflictions.ClearAllStatus();
             afflictions.UpdateWeight();
             // Reset the Poison again
@@ -651,6 +652,17 @@ public partial class Plugin : BaseUnityPlugin
         {
             //Hunter can't die on cooldown
             __instance.data.deathTimer = 0;
+        }
+    }
+
+    [HarmonyPatch(typeof(Character), nameof(Character.UpdateVariablesFixed))]
+    [HarmonyPostfix]
+    private static void DisableHunterDeathTimer(Character __instance)
+    {
+        //Add back the timer amount
+        if (isHunter(__instance) && __instance.data.fullyPassedOut && !__instance.data.carrier)
+        {
+            __instance.data.deathTimer -= Time.fixedDeltaTime / 60f;
         }
     }
 
@@ -720,9 +732,55 @@ public partial class Plugin : BaseUnityPlugin
         return false;
     }
 
+    //Runners can't spectate Hunters
+    [HarmonyPatch(typeof(MainCameraMovement), nameof(MainCameraMovement.SwapSpecPlayer))]
+    [HarmonyPrefix]
+    private static bool CantSpectateHunterPatch(MainCameraMovement __instance, int add)
+    {
+        //Modified from SwapSecPlayer function
+        List<Character> list = new List<Character>();
+        foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
+        {
+            //Remove Hunters from List unless local is Hunter
+            if (!allPlayerCharacter.data.dead && !allPlayerCharacter.isBot && (isLocalHunter() || !isHunter(allPlayerCharacter)))
+            {
+                list.Add(allPlayerCharacter);
+            }
+        }
+
+        if (list.Count == 0)
+        {
+            MainCameraMovement.specCharacter = null;
+            return false;
+        }
+
+        if (MainCameraMovement.specCharacter == null)
+        {
+            Debug.LogError("WE FOUND IT");
+            return false;
+        }
+
+        int playerListID = MainCameraMovement.specCharacter.GetPlayerListID(list);
+        playerListID += add;
+        if (playerListID < 0)
+        {
+            playerListID = list.Count - 1;
+        }
+
+        if (playerListID >= list.Count)
+        {
+            playerListID = 0;
+        }
+
+        MainCameraMovement.specCharacter = list[playerListID];
+
+        //Don't return to original method
+        return false;
+    }
+
     private static Vector3 RespawnCharacterPos(bool nextSection)
     {
-        int sectionNum = currSegment;
+        int sectionNum = MapHandler.Instance.currentSegment;
         if (nextSection)
             sectionNum++;
 
@@ -873,7 +931,7 @@ public partial class Plugin : BaseUnityPlugin
         while (regainedUsage.Value < 1 && itemData != null)
         {
             yield return new WaitForSeconds(1);
-            regainedUsage.Value += 1f / _.blowgunCooldown.Value;
+            regainedUsage.Value += 1f / (_.blowgunCooldown.Value * 60);
         }
 
         //Fully recharged
@@ -957,8 +1015,6 @@ public partial class Plugin : BaseUnityPlugin
     }
 
     //Only instantiate once
-    static SettingsTABSButton hunterTab;
-
     [HarmonyPatch(typeof(SharedSettingsMenu), nameof(SharedSettingsMenu.OnEnable))]
     [HarmonyPrefix]
     private static void AddedHunterMenuPatch(SharedSettingsMenu __instance)
@@ -995,6 +1051,9 @@ public partial class Plugin : BaseUnityPlugin
 
         //Load Settings
         __instance.settings.Clear();
+
+        //Profiles
+        __instance.settings.Add(new HunterSettingProfiles());
 
         string lastSection = "";
         foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
@@ -1033,11 +1092,20 @@ public partial class Plugin : BaseUnityPlugin
             return;
 
         //Categories
-        foreach (EnumSettingUI enumSetting in __instance.transform.Find("Content/Parent").GetComponentsInChildren<EnumSettingUI>())
+        Transform content = __instance.transform.Find("Content/Parent");
+        int category = 0;
+        foreach (EnumSettingUI enumSetting in content.GetComponentsInChildren<EnumSettingUI>())
             if (enumSetting.GetComponentInParent<SettingsUICell>().m_text.text.Contains("CATEGORY"))
             {
                 enumSetting.GetComponentInParent<SettingsUICell>().m_text.fontSizeMax = 40;
+                switch (category)
+                {
+                    case 0: enumSetting.GetComponentInParent<SettingsUICell>().m_text.color = new Color(.750f, .594f, .188f); break;
+                    case 1: enumSetting.GetComponentInParent<SettingsUICell>().m_text.color = new Color(.188f, .458f, .750f); break;
+                    case 2: enumSetting.GetComponentInParent<SettingsUICell>().m_text.color = new Color(.750f, .192f, .238f); break;
+                }
                 enumSetting.gameObject.SetActive(false);
+                category++;
             }
 
         //Remove "LOC: "
@@ -1047,7 +1115,11 @@ public partial class Plugin : BaseUnityPlugin
             locText.tmp.text = locText.currentText.Replace("LOC: ", "");
         }
 
-        //Disable editing if not Host
+        //Change cannot change text
+        for (int i = 0; i < content.childCount; i++)
+            content.GetChild(i).Find("OnlyOnMainMenu").GetComponent<TextMeshProUGUI>().text = "THESE SETTINGS CAN ONLY BE ADJUSTED BY THE HOST.";
+
+        //Disable Rest
         if (Player.localPlayer != null && !PhotonNetwork.IsMasterClient)
             foreach (Selectable ui in __instance.transform.Find("Content/Parent").GetComponentsInChildren<Selectable>())
                 ui.interactable = false;
@@ -1055,7 +1127,7 @@ public partial class Plugin : BaseUnityPlugin
         Log.LogDebug("Second Pass: Loaded Hunter Tab Options");
     }
 
-    //BTW - Function does not work
+    //BTW - Function does not work (I think works better now?)
     private void UpdateHunterModSettings()
     {
         //Not loaded
@@ -1064,12 +1136,13 @@ public partial class Plugin : BaseUnityPlugin
 
         //Not on same tab
         SharedSettingsMenu menu = hunterTab.GetComponentInParent<SharedSettingsMenu>();
-        if (menu.m_tabs.selectedButton != hunterTab)
+        Log.LogDebug("Failed to load Hunter Tab -> " + (menu == null || menu.m_tabs == null || menu.m_tabs.selectedButton == null || menu.m_tabs.selectedButton != hunterTab));
+        if (menu == null || menu.m_tabs == null || menu.m_tabs.selectedButton == null || menu.m_tabs.selectedButton != hunterTab)
             return;
 
         //Refesh values
         Transform content = menu.transform.Find("Content/Parent");
-        for (int i = 0; i < content.childCount; i++)
+        for (int i = 1; i < content.childCount; i++)
         {
             if (content.GetChild(i).GetComponentInChildren<FloatSettingUI>() is FloatSettingUI floatComponent)
             {
@@ -1077,10 +1150,110 @@ public partial class Plugin : BaseUnityPlugin
                 floatComponent.inputField.SetTextWithoutNotify(((HunterNumSetting)menu.settings[i]).Expose(floatComponent.slider.value));
             }
             else if (content.GetChild(i).GetComponentInChildren<EnumSettingUI>() is EnumSettingUI enumComponent)
-                enumComponent.dropdown.SetValueWithoutNotify(((HunterBoolSetting)menu.settings[i]).GetValue());
+            {
+                if ((menu.settings[i] as HunterBoolSetting) != null)
+                    enumComponent.dropdown.SetValueWithoutNotify(((HunterBoolSetting)menu.settings[i]).GetValue());
+                else if ((menu.settings[i] as HunterEnumSetting) != null)
+                    enumComponent.dropdown.SetValueWithoutNotify(((HunterEnumSetting)menu.settings[i]).GetValue());
+            }
         }
 
+        UpdateProfileSetting();
         Log.LogDebug("Hunter Tab Updated");
+    }
+
+    private int UpdateProfileSetting()
+    {
+        SharedSettingsMenu menu = hunterTab.GetComponentInParent<SharedSettingsMenu>();
+        Transform content = menu.transform.Find("Content/Parent");
+        EnumSettingUI enumComponent = content.GetChild(0).GetComponentInChildren<EnumSettingUI>();
+
+        //Check if the values are modified
+        bool modifiedValues = false;
+        foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
+        {
+            switch (configEntry.Value.BoxedValue)
+            {
+                case float f:
+                    if (f != (float)configEntry.Value.DefaultValue)
+                        modifiedValues = true;
+                    break;
+                case int i:
+                    if (i != (int)configEntry.Value.DefaultValue)
+                        modifiedValues = true;
+                    break;
+                case bool b:
+                    if (b != (bool)configEntry.Value.DefaultValue)
+                        modifiedValues = true;
+                    break;
+                case string s:
+                    if (s != (string)configEntry.Value.DefaultValue)
+                        modifiedValues = true;
+                    break;
+            }
+        }
+
+        int value = modifiedValues ? 0 : 1;
+        enumComponent.dropdown.SetValueWithoutNotify(value);
+        return value;
+    }
+
+    enum SettingProfiles
+    {
+        Custom,
+        OneHunter
+    }
+
+    class HunterSettingProfiles : EnumSetting<SettingProfiles>, IExposedSetting, IConditionalSetting
+    {
+        public HunterSettingProfiles()
+        {
+            Value = (SettingProfiles)_.UpdateProfileSetting();
+        }
+
+        public override void ApplyValue()
+        {
+            if (Value == SettingProfiles.OneHunter)
+            {
+                foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
+                {
+                    configEntry.Value.BoxedValue = configEntry.Value.DefaultValue;
+                    if (Character.localCharacter != null)
+                        Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configEntry.Key.Section, configEntry.Key.Key, configEntry.Value.DefaultValue);
+                }
+                _.UpdateHunterModSettings();
+            }
+        }
+
+        public string GetCategory()
+        {
+            return "General";
+        }
+
+        public string GetDisplayName()
+        {
+            return "Setting Profiles";
+        }
+
+        public override List<LocalizedString> GetLocalizedChoices()
+        {
+            return null;
+        }
+
+        public override List<string> GetUnlocalizedChoices()
+        {
+            return new List<string>() { "Custom", "1 Hunter" };
+        }
+
+        public bool ShouldShow()
+        {
+            return Player.localPlayer == null || PhotonNetwork.IsMasterClient;
+        }
+
+        protected override SettingProfiles GetDefaultValue()
+        {
+            return SettingProfiles.Custom;
+        }
     }
 
     class HunterCategorySetting : OffOnSetting, IExposedSetting
@@ -1146,6 +1319,7 @@ public partial class Plugin : BaseUnityPlugin
                 Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configDef.Section, configDef.Key, config.BoxedValue);
                 Log.LogDebug("Server: Sent Config Info");
             }
+            _.UpdateProfileSetting();
         }
 
         public float GetValue()
@@ -1173,19 +1347,18 @@ public partial class Plugin : BaseUnityPlugin
             switch (configDef.Key)
             {
                 case "InitialHunterCooldown":
-                case "AdditionalHunterCooldown":
+                case "AddedCooldownPerSection":
                     return new Unity.Mathematics.float2(0, 100);
                 case "FallDamageMultiplier":
                     return new Unity.Mathematics.float2(0, 2);
-                case "BlowgunCooldown":
-                    return new Unity.Mathematics.float2(0, 600);
+                case "BlowgunCooldownInMins":
+                    return new Unity.Mathematics.float2(0, 20);
                 case "AttackKnockbackMultiplier":
                     return new Unity.Mathematics.float2(0, 10);
                 default:
                     return new Unity.Mathematics.float2(0, 1);
             }
         }
-
     }
 
     class HunterBoolSetting : OffOnSetting, IExposedSetting
@@ -1208,6 +1381,12 @@ public partial class Plugin : BaseUnityPlugin
                 Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configDef.Section, configDef.Key, config.Value);
                 Log.LogDebug("Server: Sent Config Info");
             }
+            _.UpdateProfileSetting();
+        }
+
+        public override int GetValue()
+        {
+            return (bool)config.BoxedValue ? 1 : 0;
         }
 
         public string GetCategory()
@@ -1255,6 +1434,16 @@ public partial class Plugin : BaseUnityPlugin
                 Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configDef.Section, configDef.Key, config.Value);
                 Log.LogDebug("Server: Sent Config Info");
             }
+            _.UpdateProfileSetting();
+        }
+
+        public override int GetValue()
+        {
+            CharacterAfflictions.STATUSTYPE value;
+            if (System.Enum.TryParse((string)config.BoxedValue, false, out value))
+                return (int)value;
+            else
+                return (int)CharacterAfflictions.STATUSTYPE.Injury;
         }
 
         public string GetCategory()
