@@ -802,17 +802,22 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPostfix]
     private static void ExtraStaminaPatch(Character __instance)
     {
+        if (!__instance.CanRegenStamina())
+            return;
+
         if (isLocalHunter())
         {
-            if (__instance.data.currentStamina == __instance.GetMaxStamina() &&
-                (SceneManager.GetActiveScene().name == "Airport" || __instance.data.extraStamina < _.hunterExtraStamina.Value))
+            if (SceneManager.GetActiveScene().name == "Airport" && __instance.data.extraStamina > _.hunterExtraStamina.Value)
                 __instance.SetExtraStamina(_.hunterExtraStamina.Value);
+            if (__instance.data.extraStamina < _.hunterExtraStamina.Value)
+                __instance.AddExtraStamina(Time.fixedDeltaTime * 0.1f);
         }
         else
         {
-            if (__instance.data.currentStamina == __instance.GetMaxStamina() &&
-                (SceneManager.GetActiveScene().name == "Airport" || __instance.data.extraStamina < _.climberExtraStamina.Value))
+            if (SceneManager.GetActiveScene().name == "Airport" && __instance.data.extraStamina > _.climberExtraStamina.Value)
                 __instance.SetExtraStamina(_.climberExtraStamina.Value);
+            if (__instance.data.extraStamina < _.climberExtraStamina.Value)
+                __instance.AddExtraStamina(Time.fixedDeltaTime * 0.1f);
         }
     }
 
