@@ -270,7 +270,7 @@ public partial class Plugin : BaseUnityPlugin
             "Reduced/Increases the amount of Damage the Hunter takes");
         enableHunterAttack = hunterConfigData.Bind("HunterStats", "EnableHunterAttack", true,
             "Determines if Hunters can use their Right-Click Attack");
-        attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackStamina/DrowsinessDebuff", 0.5f,
+        attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackDrowsinessDebuff", 0.5f,
             "The amount of Stamina Bar needed when the Hunter uses their Attack and amount of Drownsiness Applied");
         attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 2f,
             "Modifies the amount of Knockback received when within range of the Hunter Attack");
@@ -461,7 +461,7 @@ public partial class Plugin : BaseUnityPlugin
         //Modify
         roleSwitcher.transform.Find("Box/Icon").GetComponent<RawImage>().texture = assets.LoadAsset<Texture2D>(isLocalHunter() ? "Hunter_Icon" : "Climber_Icon");
         roleSwitcher.transform.Find("SFX Click").GetComponent<SFX_PlayOneShot>().sfxs =
-            __instance.transform.Find("PassportUI/Canvas/Panel/Panel/BG/Options/Grid/UI_PassportGridButton/SFX Click").GetComponent<SFX_PlayOneShot>().sfxs;
+            __instance.transform.Find("PassportUI/Canvas/Panel/Panel/BG/Options/Stuff/Grid/UI_PassportGridButton/SFX Click").GetComponent<SFX_PlayOneShot>().sfxs;
         roleSwitcher.onClick = new Button.ButtonClickedEvent();
         roleSwitcher.onClick.AddListener(() => ChangeRole());
 
@@ -644,14 +644,34 @@ public partial class Plugin : BaseUnityPlugin
         }
     }
 
+    public static bool hunterDropItems = false;
+
+    [HarmonyPatch(typeof(CharacterItems), nameof(CharacterItems.DropAllItems))]
+    [HarmonyPrefix]
+    private static bool HunterDoesntDropItems(CharacterItems __instance, bool includeBackpack)
+    {
+        if (__instance.character.IsLocal)
+        {
+            //Hunter does not drop items unless they died
+            if (isLocalHunter() && !hunterDropItems)
+                return false;
+            hunterDropItems = false;
+        }
+        return true;
+    }
+
     [HarmonyPatch(typeof(Character), nameof(Character.HandlePassedOut))]
-    [HarmonyPostfix]
+    [HarmonyPrefix]
     private static void HunterCantDieOnCooldownPatch(Character __instance)
     {
+        //Hunter can't die on cooldown
         if (hunterCooldown > Time.time && isLocalHunter())
-        {
-            //Hunter can't die on cooldown
             __instance.data.deathTimer = 0;
+        //Hunter drops items on death
+        if (__instance.data.deathTimer > 1 && isLocalHunter())
+        {
+            hunterDropItems = true;
+            __instance.refs.items.DropAllItems(true);
         }
     }
 
@@ -732,17 +752,46 @@ public partial class Plugin : BaseUnityPlugin
         return false;
     }
 
-    //Runners can't spectate Hunters
+    //Runners can't spectate Hunters (Wish could modify canbespecated variable :( ))
+    [HarmonyPatch(typeof(MainCameraMovement), nameof(MainCameraMovement.GetSpecPlayer))]
+    private static bool CantDefaultSpectateHunterPatch(MainCameraMovement __instance)
+    {
+        //Modified from GetSpecPlayer function
+        List<Character> allPlayerCharacters = PlayerHandler.GetAllPlayerCharacters();
+        if (allPlayerCharacters.Count == 0)
+        {
+            return false;
+        }
+
+        if (Character.localCharacter.data.canBeSpectated)
+        {
+            MainCameraMovement.specCharacter = Character.localCharacter;
+            return false;
+        }
+
+        for (int i = 0; i < allPlayerCharacters.Count; i++)
+        {
+            if (allPlayerCharacters[i].data.canBeSpectated && !allPlayerCharacters[i].isBot && (isLocalHunter() || !isHunter(allPlayerCharacters[i])))
+            {
+                MainCameraMovement.specCharacter = allPlayerCharacters[i];
+                break;
+            }
+        }
+
+        //Don't return to original method
+        return false;
+    }
+
     [HarmonyPatch(typeof(MainCameraMovement), nameof(MainCameraMovement.SwapSpecPlayer))]
     [HarmonyPrefix]
-    private static bool CantSpectateHunterPatch(MainCameraMovement __instance, int add)
+    private static bool CantPickSpectateHunterPatch(MainCameraMovement __instance, int add)
     {
         //Modified from SwapSecPlayer function
         List<Character> list = new List<Character>();
         foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
         {
             //Remove Hunters from List unless local is Hunter
-            if (!allPlayerCharacter.data.dead && !allPlayerCharacter.isBot && (isLocalHunter() || !isHunter(allPlayerCharacter)))
+            if (allPlayerCharacter.data.canBeSpectated && !allPlayerCharacter.isBot && (isLocalHunter() || !isHunter(allPlayerCharacter)))
             {
                 list.Add(allPlayerCharacter);
             }
@@ -786,7 +835,8 @@ public partial class Plugin : BaseUnityPlugin
 
         // Spawn Location
         Vector3 spawnPosition;
-        switch ((Segment)sectionNum)
+        Segment segment = (Segment)sectionNum;
+        switch (segment)
         {
             case Segment.Peak:
                 spawnPosition = MapHandler.Instance.respawnThePeak.position;
@@ -795,6 +845,9 @@ public partial class Plugin : BaseUnityPlugin
                 spawnPosition = MapHandler.Instance.segments[sectionNum].reconnectSpawnPos.position;
                 break;
         }
+        if (segment == Segment.Beach || segment == Segment.TheKiln)
+            spawnPosition += Vector3.up;
+
         return spawnPosition;
     }
 
@@ -846,7 +899,8 @@ public partial class Plugin : BaseUnityPlugin
     {
         if (!_.enableHunterAttack.Value)
             return;
-        if (!isHunter(__instance.character) || __instance.character.GetMaxStamina() < _.attackDrowsiness.Value)
+        //Hunter can always use just will pass out if too much which... could be advantageous
+        if (!isHunter(__instance.character) || __instance.character.GetMaxStamina() <= 0)
             return;
         //Summons area affect cloud that will push away and hurt anyone in vicinity
         Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 1.5f;
@@ -858,12 +912,12 @@ public partial class Plugin : BaseUnityPlugin
                 continue;
 
             float num = Vector3.Distance(attackPos, character.Center);
-            if (num < 5)
+            if (num < 7)
             {
                 //If climbing, doesn't ragdoll
                 if (!character.data.isClimbing)
                     character.Fall(0.1f);
-                character.AddForce((5 - num) * (character.Center - __instance.character.Center).normalized * 133 *
+                character.AddForce((7 - num) * (5/7) * (character.Center - __instance.character.Center).normalized * 133 *
                     _.attackKnockbackMultiplier.Value);
                 //Hunter doesn't get damaged
                 if (!isHunter(character))
@@ -872,7 +926,7 @@ public partial class Plugin : BaseUnityPlugin
                     if (!System.Enum.TryParse(_.attackType.Value, false, out affliction))
                         affliction = CharacterAfflictions.STATUSTYPE.Injury;
 
-                    float attackValue = (5 - num) / 5 * _.attackAmount.Value;
+                    float attackValue = (7 - num) / 7 * _.attackAmount.Value;
                     //Remove the damage multiplier for Hunter Attack
                     if (affliction == CharacterAfflictions.STATUSTYPE.Injury)
                         attackValue /= _.climberDamageMultiplier.Value;
@@ -1017,6 +1071,44 @@ public partial class Plugin : BaseUnityPlugin
             return false;
         }
         return true;
+    }
+
+    [HarmonyPatch(typeof(ScoutEffigy), nameof(ScoutEffigy.FinishConstruction))]
+    [HarmonyPrefix]
+    private static bool DontRespawnHuntersPatch_Effigy(ScoutEffigy __instance, ref GameObject __result)
+    {
+        __result = null;
+
+        //Edited from original ScoutEffigy.FinishConstruction
+        if (!__instance.constructing)
+        {
+            return false;
+        }
+        if (__instance.currentPreview == null)
+        {
+            return false;
+        }
+        List<Character> list = new List<Character>();
+        foreach (Character allCharacter in Character.AllCharacters)
+        {
+            //Dont count hunters
+            if ((allCharacter.data.dead || allCharacter.data.fullyPassedOut) && !isHunter(allCharacter))
+            {
+                list.Add(allCharacter);
+            }
+        }
+        if (list.Count == 0)
+        {
+            return false;
+        }
+        list.RandomSelection((Character c) => 1).photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, __instance.currentConstructHit.point + Vector3.up * 1f, false);
+        if ((bool)Zorro.Core.Singleton<AchievementManager>.Instance)
+        {
+            Zorro.Core.Singleton<AchievementManager>.Instance.AddToRunBasedInt(RUNBASEDVALUETYPE.ScoutsResurrected, 1);
+        }
+
+        //Do not return to original method
+        return false;
     }
 
     //Only instantiate once
