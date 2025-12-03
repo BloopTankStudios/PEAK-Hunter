@@ -475,7 +475,7 @@ public partial class Plugin : BaseUnityPlugin
     private static void BoardingPassUIPatch(BoardingPass __instance)
     {
         //Set corresponding sprites
-        for (int i = 0; i < Character.AllCharacters.Count; i++)
+        for (int i = 0; i < Mathf.Min(Character.AllCharacters.Count, __instance.players.Length); i++)
             __instance.players[i].sprite = isHunter(Character.AllCharacters[i]) ? hunterSprite : climberSprite;
         //Log BoardingPass instance for later updating
         if (boardingPass == null)
@@ -912,12 +912,12 @@ public partial class Plugin : BaseUnityPlugin
                 continue;
 
             float num = Vector3.Distance(attackPos, character.Center);
-            if (num < 7)
+            if (num < 5)
             {
                 //If climbing, doesn't ragdoll
                 if (!character.data.isClimbing)
                     character.Fall(0.1f);
-                character.AddForce((7 - num) * (5/7) * (character.Center - __instance.character.Center).normalized * 133 *
+                character.AddForce((5 - num) * (character.Center - __instance.character.Center).normalized * 133 *
                     _.attackKnockbackMultiplier.Value);
                 //Hunter doesn't get damaged
                 if (!isHunter(character))
@@ -926,7 +926,7 @@ public partial class Plugin : BaseUnityPlugin
                     if (!System.Enum.TryParse(_.attackType.Value, false, out affliction))
                         affliction = CharacterAfflictions.STATUSTYPE.Injury;
 
-                    float attackValue = (7 - num) / 7 * _.attackAmount.Value;
+                    float attackValue = (5 - num) / 5 * _.attackAmount.Value;
                     //Remove the damage multiplier for Hunter Attack
                     if (affliction == CharacterAfflictions.STATUSTYPE.Injury)
                         attackValue /= _.climberDamageMultiplier.Value;
