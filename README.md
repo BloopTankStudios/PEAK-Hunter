@@ -1,31 +1,39 @@
-# Hunter
+# Hunter Mod
 
-Describe your project here!
+Want to try a new gamemode in PEAK? Try the Hunter mod where you can choose to be on the Hunter or Climber team as you race up the mountain!
 
-## Template Instructions
+#### See the Hunter Mod in Action! (Click to Watch)
 
-You can remove this section after you've set up your project.
+[![BloopTank Playing PEAK with the Hunter Mod](https://img.youtube.com/vi/09OCAMJt05M/0.jpg)](https://youtu.be/09OCAMJt05M)
 
-Next steps:
+## The Climber Role
 
-- Create a copy of the `Config.Build.user.props.template` file and name it `Config.Build.user.props`
-  - This will automate copying your plugin assembly to `BepInEx/plugins/`
-  - Configure the paths to point to your game path and your `BepInEx/plugins/`
-  - Game assembly references should work if the path to the game is valid
-- Search `TODO` in the whole project to see what you should configure or modify
+The Goal:
+Make it to the top!
 
-### Thunderstore Packaging
+Abilities:
+One random Climber will recieve the reusable Blowgun!
 
-This template comes with Thunderstore packaging built-in, using [TCLI](<https://github.com/thunderstore-io/thunderstore-cli>).
+## The Hunter Role
 
-You can build Thunderstore packages by running:
+The Goal:
+Stop the Climbers from reaching the top at all costs!
 
-```sh
-dotnet build -c Release -target:PackTS -v d
-```
+Abilities:
+The Reach Ability is now an explosive Attack which causes a knockback and damage to anyone within this area of effect! Be careful though as it costs 50% of your stamina!
+You will also naturally regen extra stamina to be able to catch up with the Climbers!
 
-> [!NOTE]  
-> You can learn about different build options with `dotnet build --help`.  
-> `-c` is short for `--configuration` and `-v d` is `--verbosity detailed`.
+## Game Setup
 
-The built package will be found at `artifacts/thunderstore/`.
+In the passport, you can change which role you are: Hunter or Climber.
+You should see a corresponding amount of Knives and Climbers in the Boarding Pass as there are in the Lobby!
+You can also see which team you're on based on the icon above the Stamina Bar.
+
+The host of the game can set specific paramters in the settings, in the Hunter Tab.
+These settings are the same as the ones in the Mod Config.
+
+For added spice, you can set the game to start with 1 Random Hunter by enabling "Pick Random Hunter"!
+You can also enable "Zombie Mode" where once a Climber dies, they join the Hunter Team!
+
+
+*I wrote this real quick, expect more info and images to be added later! I hope you enjoy! -RedEng Dev*

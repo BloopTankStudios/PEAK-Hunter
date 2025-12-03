@@ -274,10 +274,10 @@ public partial class Plugin : BaseUnityPlugin
             "The amount of Stamina Bar needed when the Hunter uses their Attack and amount of Drownsiness Applied");
         attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 2f,
             "Modifies the amount of Knockback received when within range of the Hunter Attack");
-        attackType = hunterConfigData.Bind("HunterStats", "AttackType", "Curse",
+        attackType = hunterConfigData.Bind("HunterStats", "AttackType", "Injury",
             "The type of Afflication that can be received by Runners when within range of the Hunter Attack. " +
             "[Injury, Hunger, Cold, Poison, Crab, Curse, Drowzy, Weight, Hot, Thorns]");
-        attackAmount = hunterConfigData.Bind("HunterStats", "AttackMaxAffliction", .1f,
+        attackAmount = hunterConfigData.Bind("HunterStats", "AttackMaxAffliction", .3f,
             "The amount of Max Afflication Amount that can be received when within range of the Hunter Attack");
         Log.LogDebug("Config File Created");
 

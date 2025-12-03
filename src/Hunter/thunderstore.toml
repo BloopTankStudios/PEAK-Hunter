@@ -7,8 +7,8 @@ repository = "https://thunderstore.io"
 [package]
 namespace = "BloopTankStudios"
 name = "Hunter"
-description = "TODO: Fill in short mod description."
-websiteUrl = "" # TODO: Add a link to your mod repository here (optional)
+description = "Adds a new Gamemode of Hunters vs. Climbers! Similar to Minecraft Manhunts"
+websiteUrl = "https://github.com/BloopTankStudios/PEAK-Hunter"
 containsNsfwContent = false
 
 [package.dependencies]
