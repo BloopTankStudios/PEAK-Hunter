@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - Not Fully Tested in Multiplayer
 
+## [1.1.1] - 2025-12-22
+
+### Fixed
+
+- Finally fixed the images in the ReadMe
+
 ## [1.1.0] - 2025-12-22
 
 ### Added
@@ -14,7 +20,6 @@ All notable changes to this project will be documented in this file.
 - Made attack distance cubic instead of linear
 - Made hunters have half the attack knockback compared to climbers
 - Hunters dying into Zombies now reset the curse value
-- Hunter has default 0.25 fall damage now
 - Blowgun has 1 minute cooldown in lobby
 - Blowgun causes drowsiness in lobby
 - Removed nametags for opposite teams (or in zombie mode)
@@ -32,6 +37,10 @@ All notable changes to this project will be documented in this file.
 - Fixed initial spawn timing to finally now be based on slowest networked player
 - Fixed hunter being able to start campfire with everyone there
 - Updated list of afflictions to new Updates (now will dynamically update)
+
+### Changed
+
+- Hunter has default 0.25 fall damage now
 
 ## [1.0.1] - 2025-12-07
 
