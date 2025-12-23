@@ -16,6 +16,8 @@ using Zorro.Settings;
 using UnityEngine.Localization;
 using System.Text.RegularExpressions;
 using Zorro.Settings.UI;
+using System.Linq;
+using Zorro.Core;
 
 namespace Hunter;
 
@@ -33,9 +35,12 @@ public partial class Plugin : BaseUnityPlugin
 {
     internal static ManualLogSource Log { get; private set; } = null!;
 
+    static bool debugMode = false;
+
     public static Plugin _;
+    public static bool isInLobby = false;
     //Player Data
-    private static Dictionary<int, bool> playersReady = new Dictionary<int, bool>();
+    private static List<int> playersReady = new List<int>();
     private static int randomBlowgunRunner = -1;
 
     //Hunter Data
@@ -45,12 +50,14 @@ public partial class Plugin : BaseUnityPlugin
     // Gamemode
     ConfigEntry<bool> zombieMode;
     ConfigEntry<bool> pickRandom;
+    ConfigEntry<bool> teamColors;
     ConfigEntry<int> initialCooldown;
     ConfigEntry<int> additionalCooldown;
     ConfigEntry<bool> disableScoutmaster;
     // Climber
     ConfigEntry<float> climberExtraStamina;
     ConfigEntry<float> climberDamageMultiplier;
+    ConfigEntry<float> climberRespawnCurse;
     ConfigEntry<bool> startWithBlowgun;
     ConfigEntry<float> blowgunCooldown;
     // Hunter
@@ -72,9 +79,9 @@ public partial class Plugin : BaseUnityPlugin
     private static GameObject hunterNearPrefab;
     //PassportUI
     private static TextMeshProUGUI roleLabel;
-    private static Button roleSwitcher;
+    private static Button? roleSwitcher;
     //BoardingPassUI
-    private static BoardingPass boardingPass;
+    private static BoardingPass? boardingPass;
     //Menu UI
     static SettingsTABSButton hunterTab;
 
@@ -107,6 +114,15 @@ public partial class Plugin : BaseUnityPlugin
             Log.LogDebug("Set \"" + section + " - " + key + "\" to " + value);
 
             _.UpdateHunterModSettings();
+
+            //Set Team Colors if Setting Changed
+            if (key == "TeamColors")
+            {
+                if (isInLobby)
+                    SetPassportTeamColors(PassportManager.instance.dummy, 0);
+                foreach (Character character in Character.AllCharacters)
+                    SetTeamColors(character.refs.customization);
+            }
         }
 
         //Update Roles on all clients
@@ -121,6 +137,34 @@ public partial class Plugin : BaseUnityPlugin
             //Update BoardingPass UI for All
             if (boardingPass != null)
                 BoardingPassUIPatch(boardingPass);
+
+            //Update colors
+            if (_.teamColors.Value)
+            {
+                //Get correct character
+                Character? character = null;
+                foreach (Character charac in Character.AllCharacters)
+                    if (charac.view.Owner.ActorNumber == ActorNumber)
+                        character = charac;
+                if (character != null)
+                {
+                    SetTeamColors(character.refs.customization);
+                    if (isInLobby && character.IsLocal)
+                        SetPassportTeamColors(PassportManager.instance.dummy, 0);
+                }
+            }
+        }
+
+        //Update Ready Status on all clients
+        [PunRPC]
+        public void RPCA_SetPlayerReadyStatus(int actorNumber, bool isReady)
+        {
+            if (!isReady && playersReady.Contains(actorNumber))
+                playersReady.Remove(actorNumber);
+            else if (isReady && !playersReady.Contains(actorNumber))
+                playersReady.Add(actorNumber);
+                
+            Log.LogDebug("Player " + actorNumber + " is " + (isReady ? "Ready" : "Not Ready"));
         }
 
         //Server creates Blowgun
@@ -135,7 +179,7 @@ public partial class Plugin : BaseUnityPlugin
                     yield return new WaitForSeconds(5);
 
                     //Get correct character
-                    Character character = null;
+                    Character? character = null;
                     foreach (Character charac in Character.AllCharacters)
                         if (charac.view.Owner.ActorNumber == actorNumber)
                             character = charac;
@@ -168,10 +212,15 @@ public partial class Plugin : BaseUnityPlugin
             IEnumerator waitForItemLoad()
             {
                 yield return new WaitUntil(() => item.data != null);
+                //Log as Unique Item
                 OptionableIntItemData invalidData = new OptionableIntItemData();
                 invalidData.HasData = true;
                 invalidData.Value = 1;
                 item.data.RegisterEntry(DataEntryKey.INVALID, invalidData);
+                //Show fuel counter for Blowgun Items
+                ItemDatabase.TryGetItem(item.itemID, out var ItemPrefab);
+                ItemPrefab.UIData.hideFuel = false;
+
                 Log.LogDebug("Client: Modified Blowgun Data");
 
                 //Auto Pickup
@@ -192,24 +241,16 @@ public partial class Plugin : BaseUnityPlugin
         return hunterDatabase.Contains(character.view.Owner.ActorNumber);
     }
 
-    private static void changeCharacterReady(Character character, bool isReady)
-    {
-        if (!playersReady.ContainsKey(character.view.Owner.ActorNumber))
-            playersReady.Add(character.view.Owner.ActorNumber, isReady);
-        else
-            playersReady[character.view.Owner.ActorNumber] = isReady;
-    }
-
     private static bool playersReadyForHunter()
     {
         bool flag = true;
         foreach (Photon.Realtime.Player player in PhotonNetwork.PlayerList)
-            //Check if Character object has "awoken"
-            if (!playersReady.ContainsKey(player.ActorNumber) || !playersReady[player.ActorNumber])
+            //Check if Character object has joined lobby
+            if (!playersReady.Contains(player.ActorNumber))
                 flag = false;
             else
             {
-                //Check if Character is still in loading screen
+                //Check if Character is still passed out drunk on beach
                 Character character = PlayerHandler.GetPlayerCharacter(player);
                 if (character.data.passedOutOnTheBeach > 0)
                     flag = false;
@@ -248,10 +289,12 @@ public partial class Plugin : BaseUnityPlugin
             "When Enabled, once Climbers die, they join the Hunter's Team");
         pickRandom = hunterConfigData.Bind("_Gamemode", "PickRandomHunter", false,
             "Upon Game Start, a random Hunter will be chosen");
-        initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldown", 10,
+        teamColors = hunterConfigData.Bind("_Gamemode", "TeamColors", false,
+            "Colors players Blue or Red depending on which side their on. Useful for Zombie Mode");
+        initialCooldown = hunterConfigData.Bind("_Gamemode", "InitialHunterCooldownOnBeach", 10,
             "Change the Cooldown of how long the Hunter is knocked out");
-        additionalCooldown = hunterConfigData.Bind("_Gamemode", "AddedCooldownPerSection", 3,
-            "Increases the amount of Cooldown applied after each Section");
+        additionalCooldown = hunterConfigData.Bind("_Gamemode", "AddedCooldownPerCampfire", 3,
+            "Increases the amount of Cooldown applied after each Campfire Section");
         disableScoutmaster = hunterConfigData.Bind("_Gamemode", "DisableScoutmaster", true,
             "Scoutmaster may be problematic with Hunter/Climber strategies!");
         // Climber
@@ -259,6 +302,8 @@ public partial class Plugin : BaseUnityPlugin
             "Applies this extra Stamina when the Climber is rested");
         climberDamageMultiplier = hunterConfigData.Bind("ClimberStats", "FallDamageMultiplier", 0.5f,
             "Reduced/Increases the amount of Damage the Climber takes. (Not Including the Hunter Attack)");
+        climberRespawnCurse = hunterConfigData.Bind("ClimberStats", "RespawnCurse", 0.15f,
+            "Amount of Curse to inflict upon Climbers for Dying and Respawning");
         startWithBlowgun = hunterConfigData.Bind("ClimberStats", "StartWithBlowgun", true,
             "Determines if 1 Random Climber starts with a Blowdart");
         blowgunCooldown = hunterConfigData.Bind("ClimberStats", "BlowgunCooldownInMins", 7f,
@@ -266,17 +311,17 @@ public partial class Plugin : BaseUnityPlugin
         // Hunter
         hunterExtraStamina = hunterConfigData.Bind("HunterStats", "ExtraStamina", 0.5f,
             "Applies this extra Stamina when the Hunter is rested");
-        hunterDamageMultiplier = hunterConfigData.Bind("HunterStats", "FallDamageMultiplier", 0.5f,
+        hunterDamageMultiplier = hunterConfigData.Bind("HunterStats", "FallDamageMultiplier", 0.25f,
             "Reduced/Increases the amount of Damage the Hunter takes");
         enableHunterAttack = hunterConfigData.Bind("HunterStats", "EnableHunterAttack", true,
             "Determines if Hunters can use their Right-Click Attack");
-        attackDrowsiness = hunterConfigData.Bind("HunterStats", "AttackDrowsinessDebuff", 0.5f,
+        attackDrowsiness = hunterConfigData.Bind("HunterStats", "HunterDrowsinessDebuff", 0.5f,
             "The amount of Stamina Bar needed when the Hunter uses their Attack and amount of Drownsiness Applied");
         attackKnockbackMultiplier = hunterConfigData.Bind("HunterStats", "AttackKnockbackMultiplier", 2f,
             "Modifies the amount of Knockback received when within range of the Hunter Attack");
         attackType = hunterConfigData.Bind("HunterStats", "AttackType", "Injury",
             "The type of Afflication that can be received by Runners when within range of the Hunter Attack. " +
-            "[Injury, Hunger, Cold, Poison, Crab, Curse, Drowzy, Weight, Hot, Thorns]");
+            "[Injury, Hunger, Cold, Poison, Crab, Curse, Drowzy, Hot, ...]");
         attackAmount = hunterConfigData.Bind("HunterStats", "AttackMaxAffliction", .3f,
             "The amount of Max Afflication Amount that can be received when within range of the Hunter Attack");
         Log.LogDebug("Config File Created");
@@ -306,49 +351,55 @@ public partial class Plugin : BaseUnityPlugin
     }
 
     //---TESTING---
-    /*private void Update()
+    private void Update()
     {
-        //Spawn to next Target
-        if (Input.GetKeyDown(KeyCode.G))
+        if (debugMode)
         {
-            Log.LogDebug("Debug - Warping to next campfire");
-            hunterCooldown = Time.time;
-            Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, RespawnCharacterPos(true), true);
-        }
-
-        //Determine if player is Hunter
-        if (Input.GetKeyDown(KeyCode.F))
-        {
-            if (isLocalHunter())
+            //Spawn to next Target
+            if (Input.GetKeyDown(KeyCode.G))
             {
-                Log.LogDebug("Debug - Applied Status to Hunter");
-                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1);
+                Log.LogDebug("Debug - Warping to next campfire");
+                hunterCooldown = Time.time;
+                Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, RespawnCharacterPos(true), true);
             }
-        }
+            //Determine if player is Hunter
+            /*if (Input.GetKeyDown(KeyCode.F))
+            {
+                //if (isLocalHunter())
+                {
+                    Log.LogDebug("Debug - Applied Status to Hunter");
+                    Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 1);
+                }
+            }*/
 
-        //if (!playersReadyForHunter())
-        //    Log.LogDebug("Players Not Ready");
-    }*/
+            //if (!playersReadyForHunter())
+            //    Log.LogDebug("Players Not Ready");
+
+            //Debug.Log("Can local be spectated " + Character.localCharacter.data.canBeSpectated);
+        }
+    }
 
     //Add Database Updater Code on Photon Player
     [HarmonyPatch(typeof(Character), nameof(Character.Awake))]
     [HarmonyPostfix]
     private static void AddHunterUpdaterPatch(Character __instance)
     {
+        isInLobby = SceneManager.GetActiveScene().name == "Airport";
+
         __instance.gameObject.AddComponent<HunterPlayerUpdater>();
 
         //Load Config Data
         SyncPlayerData(__instance);
 
-        //Add if player is loaded/ready to begin Hunter scene
-        if (SceneManager.GetActiveScene().name == "Airport")
-            changeCharacterReady(__instance, false);
-        else
-            changeCharacterReady(__instance, true);
-
         //Add SmallIcon to bottom left
         if (__instance.IsLocal)
         {
+            //Add if player is loaded/ready to begin Hunter scene
+            if (isInLobby)
+                __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, false);
+            else
+                __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, true);
+
             smallRoleIcon = new GameObject("UI_RoleIcon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image)).GetComponent<Image>();
             smallRoleIcon.transform.SetParent(GUIManager.instance.transform.Find("Canvas_HUD/BarGroup/Bar"));
             smallRoleIcon.transform.localScale = Vector3.one * .5f;
@@ -362,7 +413,7 @@ public partial class Plugin : BaseUnityPlugin
     private static void SyncPlayerData(Character character)
     {
         //Reset Static Values
-        if (character.IsLocal && SceneManager.GetActiveScene().name == "Airport")
+        if (character.IsLocal && isInLobby)
         {
             playersReady.Clear();
             randomBlowgunRunner = -1;
@@ -377,14 +428,87 @@ public partial class Plugin : BaseUnityPlugin
             return;
 
         //Send all data
-        if (SceneManager.GetActiveScene().name == "Airport")
-            foreach (Character charac in Character.AllCharacters)
-                character.view.RPC("RPCA_ChangeRole", RpcTarget.Others, charac.view.Owner.ActorNumber, isHunter(charac));
+        //if (isInLobby)
+        foreach (Character charac in Character.AllCharacters)
+            character.view.RPC("RPCA_ChangeRole", RpcTarget.Others, charac.view.Owner.ActorNumber, isHunter(charac));
 
         foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
             character.photonView.RPC("RPC_RecieveConfigData", RpcTarget.Others, configEntry.Key.Section, configEntry.Key.Key, configEntry.Value.BoxedValue);
 
         Log.LogDebug("Server: Sent All Config Info");
+    }
+
+    //Remove Nametag if not on same team (or zombie mode enabled)
+    [HarmonyPatch(typeof(IsLookedAt), nameof(IsLookedAt.Start))]
+    [HarmonyPostfix]
+    private static void RemoveOtherTeamNametags(IsLookedAt __instance)
+    {
+        if (isInLobby)
+            return;
+        if (_.zombieMode.Value || !(isLocalHunter() ^ isHunter(__instance.characterInteractible.character)))
+            __instance.gameObject.SetActive(false);
+    }
+
+    //Teams cannot access each others backpacks
+    [HarmonyPatch(typeof(BackpackOnBackVisuals), nameof(BackpackOnBackVisuals.IsInteractible))]
+    [HarmonyPrefix]
+    private static bool LimitTeamBackpack(BackpackOnBackVisuals __instance, Character interactor, ref bool __result)
+    {
+        if (isLocalHunter() ^ isHunter(interactor))
+        {
+            __result = false;
+            //Do not return to original code
+            return false;
+        }
+        return true;
+    }
+
+    static bool hasSetColors = false;
+
+    //Set Character Color to Red/Blue
+    [HarmonyPatch(typeof(CharacterCustomization), nameof(CharacterCustomization.OnPlayerDataChange))]
+    [HarmonyPostfix]
+    private static void SetTeamColors(CharacterCustomization __instance)
+    {
+        if (!_.teamColors.Value && !hasSetColors)
+            return;
+
+        ChangeRefColors(__instance.refs, __instance.PlayerColor, isHunter(__instance._character), false);
+    }
+
+    //Passport special case
+    [HarmonyPatch(typeof(PlayerCustomizationDummy), nameof(PlayerCustomizationDummy.SetPlayerColor))]
+    [HarmonyPostfix]
+    private static void SetPassportTeamColors(PlayerCustomizationDummy __instance, int index)
+    {
+        if (!_.teamColors.Value && !hasSetColors)
+            return;
+
+        ChangeRefColors(__instance.refs, Character.localCharacter.refs.customization.PlayerColor, isLocalHunter(), true);
+    }
+
+    private static void ChangeRefColors(CustomizationRefs refs, Color color, bool isHunter, bool isPassport)
+    {
+        if (!isPassport)
+            hasSetColors = _.teamColors.Value;
+        if (_.teamColors.Value)
+        {
+            //Abbreviated: Convert RGB -> HSV -> Hue Shift -> RGB
+            float[] minMax = {Mathf.Min(color.r, color.g, color.b), Mathf.Max(color.r, color.g, color.b)};
+            color = new Color(1, 1, 1) * minMax[0] + (minMax[1] - minMax[0]) * (isHunter ? new Color(1, 0, 0) : new Color(0, 0, 1));
+        }
+
+        //Override material colors
+        Renderer[] playerRenderers = refs.PlayerRenderers;
+        for (int i = 0; i < playerRenderers.Length; i++)
+        {
+            playerRenderers[i].material.SetColor(CharacterCustomization.SkinColor, color);
+        }
+        playerRenderers = refs.EyeRenderers;
+        for (int i = 0; i < playerRenderers.Length; i++)
+        {
+            playerRenderers[i].material.SetColor(CharacterCustomization.SkinColor, color);
+        }
     }
 
     //Add The Hunter Is Near to GUI
@@ -525,6 +649,9 @@ public partial class Plugin : BaseUnityPlugin
                 }
             }
         }
+        //Hunters can't pre-light campfire even if everyone's there
+        if (isLocalHunter() && !debugMode)
+            flag = false;
         if (!flag)
         {
             printout = LocalizedText.GetText("CANTLIGHT") + "\n" + printout;
@@ -578,7 +705,7 @@ public partial class Plugin : BaseUnityPlugin
     private static void ReachedNextStagePatch()
     {
         //Activate only if not in lobby
-        if (SceneManager.GetActiveScene().name != "Airport")
+        if (!isInLobby)
         {
             //Reset
             if (MapHandler.Instance.currentSegment == 0)
@@ -610,7 +737,6 @@ public partial class Plugin : BaseUnityPlugin
 
             //Hunter Cooldown
             float cooldownLength = initialCooldown.Value + additionalCooldown.Value * MapHandler.Instance.currentSegment;
-            hunterCooldown = cooldownLength + Time.time;
             // Refresh except Curse
             afflictions.ClearAllStatus();
             // Give Poison til ready
@@ -622,9 +748,11 @@ public partial class Plugin : BaseUnityPlugin
             // Extra wait if people still passed out on beach
             while (currSegment == 0 && !playersReadyForHunter())
             {
+                hunterCooldown = Mathf.Infinity;
                 Log.LogDebug("Waiting for Players to Load on Beach");
                 yield return null;
             }
+            hunterCooldown = cooldownLength + Time.time;
             yield return new WaitForSeconds(cooldownLength);
 
             //Spawn Hunter
@@ -644,12 +772,35 @@ public partial class Plugin : BaseUnityPlugin
         }
     }
 
+    //Due to spawning conditions, Hunters won't have the Fog or Lava to compete with
+    [HarmonyPatch(typeof(FogSphere), nameof(FogSphere.Update))]
+    [HarmonyPostfix]
+    private static void DisableFog()
+    {
+        if (!isLocalHunter())
+            return;
+
+        Singleton<OrbFogHandler>.Instance.sphere.gameObject.SetActive(false);
+    }
+
+    [HarmonyPatch(typeof(LavaRising), nameof(LavaRising.Update))]
+    [HarmonyPostfix]
+    private static void DisableLavaRise()
+    {
+        if (!isLocalHunter())
+            return;
+
+        Singleton<LavaRising>.Instance.timeTraveled = 0;
+    }
+
     public static bool hunterDropItems = false;
 
     [HarmonyPatch(typeof(CharacterItems), nameof(CharacterItems.DropAllItems))]
     [HarmonyPrefix]
     private static bool HunterDoesntDropItems(CharacterItems __instance, bool includeBackpack)
     {
+        if (isInLobby)
+            return false;
         if (__instance.character.IsLocal)
         {
             //Hunter does not drop items unless they died
@@ -665,7 +816,7 @@ public partial class Plugin : BaseUnityPlugin
     private static void HunterCantDieOnCooldownPatch(Character __instance)
     {
         //Hunter can't die on cooldown
-        if (hunterCooldown > Time.time && isLocalHunter())
+        if (isInLobby || (hunterCooldown > Time.time && isLocalHunter()))
             __instance.data.deathTimer = 0;
         //Hunter drops items on death
         if (__instance.data.deathTimer > 1 && isLocalHunter())
@@ -690,6 +841,10 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPrefix]
     private static bool HunterDeathPatch(Character __instance)
     {
+        //Edge case of CheckEndGame being called from RunManager when player has not died
+        if (!__instance.data.dead)
+            return true;
+
         //Modified from original CheckEndGame Function
         bool flag = true;
         for (int i = 0; i < Character.AllCharacters.Count; i++)
@@ -701,7 +856,8 @@ public partial class Plugin : BaseUnityPlugin
             }
         }
         //Debug: Do not end game
-        //flag = false;
+        if (debugMode)
+            flag = false;
         if (flag)
         {
             if (PhotonNetwork.IsMasterClient)
@@ -736,95 +892,81 @@ public partial class Plugin : BaseUnityPlugin
             IEnumerator waitForRespawn()
             {
                 yield return new WaitForSeconds(5);
+                //Disable Fog/Lava
+                DisableFog();
+                DisableLavaRise();
+                //Change Role
                 ChangeRole();
                 Log.LogDebug("Climber Respawned as Hunter");
                 Character.localCharacter.refs.afflictions.UpdateWeight();
                 hunterCooldown = Time.time;
                 Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), false);
                 //Custom Effects
-                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
+                Character.localCharacter.refs.afflictions.SetStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
                 Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f);
                 //Show User that they are now a Hunter
                 _.StartCoroutine(_.showMessage("YOU ARE NOW A HUNTER"));
+
             }
         }
-        //Don't return to original method
-        return false;
-    }
-
-    //Runners can't spectate Hunters (Wish could modify canbespecated variable :( ))
-    [HarmonyPatch(typeof(MainCameraMovement), nameof(MainCameraMovement.GetSpecPlayer))]
-    private static bool CantDefaultSpectateHunterPatch(MainCameraMovement __instance)
-    {
-        //Modified from GetSpecPlayer function
-        List<Character> allPlayerCharacters = PlayerHandler.GetAllPlayerCharacters();
-        if (allPlayerCharacters.Count == 0)
+        else if (debugMode)
         {
-            return false;
-        }
-
-        if (Character.localCharacter.data.canBeSpectated)
-        {
-            MainCameraMovement.specCharacter = Character.localCharacter;
-            return false;
-        }
-
-        for (int i = 0; i < allPlayerCharacters.Count; i++)
-        {
-            if (allPlayerCharacters[i].data.canBeSpectated && !allPlayerCharacters[i].isBot && (isLocalHunter() || !isHunter(allPlayerCharacters[i])))
+            //Debug - Auto Respawn Climbers
+            _.StartCoroutine(waitForRespawn());
+            IEnumerator waitForRespawn()
             {
-                MainCameraMovement.specCharacter = allPlayerCharacters[i];
-                break;
+                yield return new WaitForSeconds(5);
+                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), true);
             }
         }
-
         //Don't return to original method
         return false;
     }
 
-    [HarmonyPatch(typeof(MainCameraMovement), nameof(MainCameraMovement.SwapSpecPlayer))]
+    //Hunters set to not be spectatable
+    [HarmonyPatch(typeof(CharacterData))]
+    [HarmonyPatch(nameof(CharacterData.canBeSpectated), MethodType.Getter)]
     [HarmonyPrefix]
-    private static bool CantPickSpectateHunterPatch(MainCameraMovement __instance, int add)
+    private static bool HuntersNotSpectatable(CharacterData __instance, ref bool __result)
     {
-        //Modified from SwapSecPlayer function
-        List<Character> list = new List<Character>();
-        foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
+        if (isHunter(__instance.character) && !__instance.character.IsLocal)
         {
-            //Remove Hunters from List unless local is Hunter
-            if (allPlayerCharacter.data.canBeSpectated && !allPlayerCharacter.isBot && (isLocalHunter() || !isHunter(allPlayerCharacter)))
-            {
-                list.Add(allPlayerCharacter);
-            }
-        }
-
-        if (list.Count == 0)
-        {
-            MainCameraMovement.specCharacter = null;
+            __result = false;
+            //Don't return to original method
             return false;
         }
 
-        if (MainCameraMovement.specCharacter == null)
+        return true;
+    }
+
+    //Show that Hunters can spectate when knocked out
+    [HarmonyPatch(typeof(GUIManager), nameof(GUIManager.UpdateSpectate))]
+    [HarmonyPostfix]
+    private static void HunterSpectateGUI(GUIManager __instance)
+    {
+        if (isLocalHunter())
+            __instance.spectatingInputs.SetActive(true);
+    }
+
+    //Allow Hunters to spectate when knocked out
+    [HarmonyPatch(typeof(MainCameraMovement), nameof(MainCameraMovement.HandleSpecSelection))]
+    [HarmonyPostfix]
+    private static void HunterSpectateInputs(MainCameraMovement __instance, ref bool __result)
+    {
+        if (!__result || !isLocalHunter())
+            return;
+        //Modified from MainCameraMovement.HandleSpecSelection()
+        //Skip over code that blocks input
+        if (Character.localCharacter.input.spectateLeftWasPressed && __instance.sinceSwitch > 0.2f)
         {
-            Debug.LogError("WE FOUND IT");
-            return false;
+            Transitions.instance.PlayTransition(TransitionType.SpectateSwitch, __instance.SwapSpecPlayerLeft, 5f, 5f);
+            __instance.sinceSwitch = 0f;
         }
-
-        int playerListID = MainCameraMovement.specCharacter.GetPlayerListID(list);
-        playerListID += add;
-        if (playerListID < 0)
+        if (Character.localCharacter.input.spectateRightWasPressed && __instance.sinceSwitch > 0.2f)
         {
-            playerListID = list.Count - 1;
+            Transitions.instance.PlayTransition(TransitionType.SpectateSwitch, __instance.SwapSpecPlayerRight, 5f, 5f);
+            __instance.sinceSwitch = 0f;
         }
-
-        if (playerListID >= list.Count)
-        {
-            playerListID = 0;
-        }
-
-        MainCameraMovement.specCharacter = list[playerListID];
-
-        //Don't return to original method
-        return false;
     }
 
     private static Vector3 RespawnCharacterPos(bool nextSection)
@@ -860,14 +1002,19 @@ public partial class Plugin : BaseUnityPlugin
 
         if (isLocalHunter())
         {
-            if (SceneManager.GetActiveScene().name == "Airport" && __instance.data.extraStamina > _.hunterExtraStamina.Value)
-                __instance.SetExtraStamina(_.hunterExtraStamina.Value);
-            if (__instance.data.extraStamina < _.hunterExtraStamina.Value)
+            float hunterExtraStamina = _.hunterExtraStamina.Value;
+            //Zombies share extra stamina
+            if (_.zombieMode.Value)
+                hunterExtraStamina /= hunterDatabase.Count;
+
+            if (isInLobby && __instance.data.extraStamina > hunterExtraStamina)
+                __instance.SetExtraStamina(hunterExtraStamina);
+            if (__instance.data.extraStamina < hunterExtraStamina)
                 __instance.AddExtraStamina(Time.fixedDeltaTime * 0.1f);
         }
         else
         {
-            if (SceneManager.GetActiveScene().name == "Airport" && __instance.data.extraStamina > _.climberExtraStamina.Value)
+            if (isInLobby && __instance.data.extraStamina > _.climberExtraStamina.Value)
                 __instance.SetExtraStamina(_.climberExtraStamina.Value);
             if (__instance.data.extraStamina < _.climberExtraStamina.Value)
                 __instance.AddExtraStamina(Time.fixedDeltaTime * 0.1f);
@@ -878,6 +1025,10 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPrefix]
     private static void ModifyHealthPatch(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType, ref float amount, bool fromRPC)
     {
+        //Apply Drowsiness in Lobby
+        if (statusType == CharacterAfflictions.STATUSTYPE.Drowsy && isInLobby)
+            __instance.currentStatuses[(int)statusType] += amount;
+        //Only negates fall damage
         if (statusType != CharacterAfflictions.STATUSTYPE.Injury)
             return;
         if (isHunter(__instance.character))
@@ -906,19 +1057,16 @@ public partial class Plugin : BaseUnityPlugin
         Vector3 attackPos = __instance.character.Center + __instance.character.data.lookDirection * 1.5f;
         __instance.character.PlayPoofVFX(attackPos);
 
+        //Set Range here
+        float rangeCubed = Mathf.Pow(5f, 3);
+
         foreach (Character character in Character.AllCharacters)
         {
-            if (character == __instance.character)
-                continue;
-
             float num = Vector3.Distance(attackPos, character.Center);
             if (num < 5)
             {
-                //If climbing, doesn't ragdoll
-                if (!character.data.isClimbing)
-                    character.Fall(0.1f);
-                character.AddForce((5 - num) * (character.Center - __instance.character.Center).normalized * 133 *
-                    _.attackKnockbackMultiplier.Value);
+                float attackRangeAmount = (rangeCubed - Mathf.Pow(num, 3)) / rangeCubed;
+
                 //Hunter doesn't get damaged
                 if (!isHunter(character))
                 {
@@ -926,21 +1074,30 @@ public partial class Plugin : BaseUnityPlugin
                     if (!System.Enum.TryParse(_.attackType.Value, false, out affliction))
                         affliction = CharacterAfflictions.STATUSTYPE.Injury;
 
-                    float attackValue = (5 - num) / 5 * _.attackAmount.Value;
+                    float attackValue = attackRangeAmount * _.attackAmount.Value;
                     //Remove the damage multiplier for Hunter Attack
                     if (affliction == CharacterAfflictions.STATUSTYPE.Injury)
                         attackValue /= _.climberDamageMultiplier.Value;
                     character.refs.afflictions.AddStatus(affliction, attackValue);
                 }
+                //Hunters get half knockback
+                else
+                    attackRangeAmount *= .5f;
+
+                //If climbing, doesn't ragdoll
+                if (!character.data.isClimbing)
+                    character.Fall(0.1f);
+                //Knockback Source
+                Vector3 knockbackSrc = __instance.character.Center;
+                if (character == __instance.character)
+                    knockbackSrc = attackPos;
+                //Knockback
+                character.AddForce(attackRangeAmount * 666 * (character.Center - knockbackSrc).normalized *
+                    _.attackKnockbackMultiplier.Value);
             }
         }
 
-        //Seperate Force added to User
-        __instance.character.Fall(0.1f);
-        __instance.character.AddForce((5 - 1.5f) * (__instance.character.Center - attackPos).normalized * 133 *
-            _.attackKnockbackMultiplier.Value);
-
-        //Gives Drowsiness to Hunter
+        //Gives Drowsiness Cooldown to Hunter
         __instance.character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Drowsy, _.attackDrowsiness.Value);
 
         Log.LogDebug("Hunter Attack!");
@@ -990,7 +1147,8 @@ public partial class Plugin : BaseUnityPlugin
         while (regainedUsage.Value < 1 && itemData != null)
         {
             yield return new WaitForSeconds(1);
-            regainedUsage.Value += 1f / (_.blowgunCooldown.Value * 60);
+            float cooldown = isInLobby ? 1 : _.blowgunCooldown.Value;
+            regainedUsage.Value += 1f / (cooldown * 60);
         }
 
         //Fully recharged
@@ -1111,6 +1269,20 @@ public partial class Plugin : BaseUnityPlugin
         return false;
     }
 
+    //Modify Curse Value
+    [HarmonyPatch(typeof(Character), nameof(Character.RPCA_Revive))]
+    [HarmonyPostfix]
+    private static void ModifyReviveCurse(Character __instance, bool applyStatus)
+    {
+        if (!applyStatus || isLocalHunter())
+            return;
+        if (_.climberRespawnCurse.Value > 0.05f)
+            __instance.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, _.climberRespawnCurse.Value - 0.05f);
+        else if (_.climberRespawnCurse.Value < 0.05f)
+            __instance.refs.afflictions.SubtractStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f - _.climberRespawnCurse.Value);
+        Log.LogDebug("Modified Curse Value");
+    }
+
     //Only instantiate once
     [HarmonyPatch(typeof(SharedSettingsMenu), nameof(SharedSettingsMenu.OnEnable))]
     [HarmonyPrefix]
@@ -1144,7 +1316,7 @@ public partial class Plugin : BaseUnityPlugin
         }
 
         //Resize to fit all
-        __instance.transform.Find("Content/Parent").localScale = Vector3.one * 0.52f;
+        __instance.transform.Find("Content/Parent").localScale = Vector3.one * 0.475f;
 
         //Load Settings
         __instance.settings.Clear();
@@ -1443,8 +1615,8 @@ public partial class Plugin : BaseUnityPlugin
         {
             switch (configDef.Key)
             {
-                case "InitialHunterCooldown":
-                case "AddedCooldownPerSection":
+                case "InitialHunterCooldownOnBeach":
+                case "AddedCooldownPerCampfire":
                     return new Unity.Mathematics.float2(0, 100);
                 case "FallDamageMultiplier":
                     return new Unity.Mathematics.float2(0, 2);
@@ -1475,7 +1647,7 @@ public partial class Plugin : BaseUnityPlugin
             config.Value = Value == OffOnMode.ON;
             if (Character.localCharacter != null)
             {
-                Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configDef.Section, configDef.Key, config.Value);
+                Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.All, configDef.Section, configDef.Key, config.Value);
                 Log.LogDebug("Server: Sent Config Info");
             }
             _.UpdateProfileSetting();
@@ -1560,7 +1732,8 @@ public partial class Plugin : BaseUnityPlugin
 
         public override List<string> GetUnlocalizedChoices()
         {
-            return new List<string>() {"Injury", "Hunger", "Cold", "Poison", "Crab", "Curse", "Drowzy", "Weight", "Hot", "Thorns"};
+            string[] afflictions = System.Enum.GetNames(typeof(CharacterAfflictions.STATUSTYPE));
+            return afflictions.ToList();
         }
 
         protected override CharacterAfflictions.STATUSTYPE GetDefaultValue()
