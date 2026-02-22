@@ -4,7 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## Known Bugs
 
-- Not Fully Tested in Multiplayer
+- Reported bugs of not working with more than 4 players?
+
+## [1.1.2] - 2026-2-21
+
+### Added
+
+- Added "Zombie" Profile
+
+### Fixed
+
+- Fixed calls to functions with changed parameters in new PEAK Updates
+  (This should fix hunter attack, hunter warping, ect.)
+- Hunters/Climbers can still reach into each other's backpacks
+- Lava doesn't properly rise in volcano for Climbers if Host is Hunter
+- Fixed hiding nametags mechanic
+
+### Changed
+
+- "1 Hunter" Profile renamed to "Default"
 
 ## [1.1.1] - 2025-12-22
 
@@ -17,8 +35,6 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Hunters can now spectate again when knocked out
-- Made attack distance cubic instead of linear
-- Made hunters have half the attack knockback compared to climbers
 - Hunters dying into Zombies now reset the curse value
 - Blowgun has 1 minute cooldown in lobby
 - Blowgun causes drowsiness in lobby
@@ -27,7 +43,7 @@ All notable changes to this project will be documented in this file.
 - New config value to set amount of curse upon climber respawn (set as triple)
 - New config option to color teams: climbers v. hunters
 - Removed fog/lava for Hunters so you can now play ascents properly
-- Hunters/Climbers can no longer reach into the other team's backpack
+- Hunters/Climbers can no longer reach into the other team's backpack (currently bugged)
 
 ### Fixed
 
@@ -41,6 +57,8 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - Hunter has default 0.25 fall damage now
+- Made hunter attack distance calculation cubic instead of linear
+- Made hunters have half the attack knockback compared to climbers
 
 ## [1.0.1] - 2025-12-07
 

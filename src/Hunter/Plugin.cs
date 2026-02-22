@@ -69,6 +69,17 @@ public partial class Plugin : BaseUnityPlugin
     ConfigEntry<string> attackType;
     ConfigEntry<float> attackAmount;
 
+    Dictionary<string, object> zombieValues = new Dictionary<string, object>
+    {
+        {"_Gamemode/ZombieMode", true},
+        {"_Gamemode/PickRandomHunter", true},
+        {"_Gamemode/TeamColors", true},
+        {"ClimberStats/RespawnCurse", 0f},
+        {"HunterStats/ExtraStamina", 1f},
+        {"HunterStats/AttackType", "Curse"},
+        {"HunterStats/AttackMaxAffliction", .15f}
+    };
+
     //Assets
     private static AssetBundle assets;
     private static Sprite climberSprite;
@@ -252,7 +263,7 @@ public partial class Plugin : BaseUnityPlugin
             {
                 //Check if Character is still passed out drunk on beach
                 Character character = PlayerHandler.GetPlayerCharacter(player);
-                if (character.data.passedOutOnTheBeach > 0)
+                if (character.data.passedOutOnTheBeach > -5)
                     flag = false;
             }
         return flag;
@@ -395,10 +406,7 @@ public partial class Plugin : BaseUnityPlugin
         if (__instance.IsLocal)
         {
             //Add if player is loaded/ready to begin Hunter scene
-            if (isInLobby)
-                __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, false);
-            else
-                __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, true);
+            __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, !isInLobby);
 
             smallRoleIcon = new GameObject("UI_RoleIcon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image)).GetComponent<Image>();
             smallRoleIcon.transform.SetParent(GUIManager.instance.transform.Find("Canvas_HUD/BarGroup/Bar"));
@@ -445,7 +453,7 @@ public partial class Plugin : BaseUnityPlugin
     {
         if (isInLobby)
             return;
-        if (_.zombieMode.Value || !(isLocalHunter() ^ isHunter(__instance.characterInteractible.character)))
+        if (_.zombieMode.Value || (isLocalHunter() ^ isHunter(__instance.characterInteractible.character)))
             __instance.gameObject.SetActive(false);
     }
 
@@ -454,7 +462,7 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPrefix]
     private static bool LimitTeamBackpack(BackpackOnBackVisuals __instance, Character interactor, ref bool __result)
     {
-        if (isLocalHunter() ^ isHunter(interactor))
+        if (isHunter(interactor) ^ isHunter(__instance.character))
         {
             __result = false;
             //Do not return to original code
@@ -630,9 +638,9 @@ public partial class Plugin : BaseUnityPlugin
     //Allows lighting of campfire without Hunter
     [HarmonyPatch(typeof(Campfire), nameof(Campfire.EveryoneInRange))]
     [HarmonyPrefix]
-    private static bool CampfireWithoutHunterPatch(Campfire __instance, ref bool __result, out string printout)
+    private static bool CampfireWithoutHunterPatch(Campfire __instance, ref bool __result, out string printout, float range)
     {
-        //Edited from Campfire.EveryoneInRange()
+        //_Modified_ from Campfire.EveryoneInRange()
         bool flag = true;
         printout = "";
         foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
@@ -642,7 +650,7 @@ public partial class Plugin : BaseUnityPlugin
                 !isHunter(allPlayerCharacter))
             {
                 float num = Vector3.Distance(__instance.transform.position, allPlayerCharacter.Center);
-                if (num > 15f && !allPlayerCharacter.data.dead)
+                if (num > range && !allPlayerCharacter.data.dead)
                 {
                     flag = false;
                     printout += $"\n{allPlayerCharacter.photonView.Owner.NickName} {Mathf.RoundToInt(num * CharacterStats.unitsToMeters)}m";
@@ -738,9 +746,9 @@ public partial class Plugin : BaseUnityPlugin
             //Hunter Cooldown
             float cooldownLength = initialCooldown.Value + additionalCooldown.Value * MapHandler.Instance.currentSegment;
             // Refresh except Curse
-            afflictions.ClearAllStatus();
+            afflictions.ClearAllStatus(true);
             // Give Poison til ready
-            afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1);
+            afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1, false, true, true);
             afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = float.PositiveInfinity;
 
             // Wait
@@ -761,11 +769,11 @@ public partial class Plugin : BaseUnityPlugin
 
             // Refresh except Curse again in case fell or other afflictions
             //Character.localCharacter.refs.items.DropAllItems(true);
-            afflictions.ClearAllStatus();
+            afflictions.ClearAllStatus(true);
             afflictions.UpdateWeight();
             // Reset the Poison again
             afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison,
-                Character.localCharacter.GetMaxStamina());
+                Character.localCharacter.GetMaxStamina(), false, true, true);
             // Set to heal immediately
             afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0;
             afflictions.currentDecrementalStatuses[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0.025f;
@@ -790,7 +798,8 @@ public partial class Plugin : BaseUnityPlugin
         if (!isLocalHunter())
             return;
 
-        Singleton<LavaRising>.Instance.timeTraveled = 0;
+        LavaRising lavaRising = Singleton<LavaRising>.FindInstance();
+        lavaRising.lava.MovePosition(new Vector3(lavaRising.transform.position.x, lavaRising.startHeight, lavaRising.lava.transform.position.z));
     }
 
     public static bool hunterDropItems = false;
@@ -845,7 +854,7 @@ public partial class Plugin : BaseUnityPlugin
         if (!__instance.data.dead)
             return true;
 
-        //Modified from original CheckEndGame Function
+        //_Modified_ from original CheckEndGame Function
         bool flag = true;
         for (int i = 0; i < Character.AllCharacters.Count; i++)
         {
@@ -879,10 +888,10 @@ public partial class Plugin : BaseUnityPlugin
                 Log.LogDebug("Hunter Respawned");
                 Character.localCharacter.refs.afflictions.UpdateWeight();
                 hunterCooldown = Time.time;
-                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), false);
+                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), false, -1);
                 //Custom Effects
-                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
-                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f);
+                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f, false, true, true);
+                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f, false, true, true);
             }
         }
         else if (_.zombieMode.Value)
@@ -900,25 +909,25 @@ public partial class Plugin : BaseUnityPlugin
                 Log.LogDebug("Climber Respawned as Hunter");
                 Character.localCharacter.refs.afflictions.UpdateWeight();
                 hunterCooldown = Time.time;
-                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), false);
+                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), false, -1);
                 //Custom Effects
-                Character.localCharacter.refs.afflictions.SetStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f);
-                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f);
+                Character.localCharacter.refs.afflictions.SetStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f, true);
+                Character.localCharacter.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 0.3f, false, true, true);
                 //Show User that they are now a Hunter
                 _.StartCoroutine(_.showMessage("YOU ARE NOW A HUNTER"));
 
             }
         }
-        else if (debugMode)
+        /*else if (debugMode)
         {
             //Debug - Auto Respawn Climbers
             _.StartCoroutine(waitForRespawn());
             IEnumerator waitForRespawn()
             {
                 yield return new WaitForSeconds(5);
-                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), true);
+                Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), true, -1);
             }
-        }
+        }*/
         //Don't return to original method
         return false;
     }
@@ -955,7 +964,7 @@ public partial class Plugin : BaseUnityPlugin
     {
         if (!__result || !isLocalHunter())
             return;
-        //Modified from MainCameraMovement.HandleSpecSelection()
+        //_Modified_ from MainCameraMovement.HandleSpecSelection()
         //Skip over code that blocks input
         if (Character.localCharacter.input.spectateLeftWasPressed && __instance.sinceSwitch > 0.2f)
         {
@@ -1078,7 +1087,7 @@ public partial class Plugin : BaseUnityPlugin
                     //Remove the damage multiplier for Hunter Attack
                     if (affliction == CharacterAfflictions.STATUSTYPE.Injury)
                         attackValue /= _.climberDamageMultiplier.Value;
-                    character.refs.afflictions.AddStatus(affliction, attackValue);
+                    character.refs.afflictions.AddStatus(affliction, attackValue, false, true, true);
                 }
                 //Hunters get half knockback
                 else
@@ -1093,12 +1102,12 @@ public partial class Plugin : BaseUnityPlugin
                     knockbackSrc = attackPos;
                 //Knockback
                 character.AddForce(attackRangeAmount * 666 * (character.Center - knockbackSrc).normalized *
-                    _.attackKnockbackMultiplier.Value);
+                    _.attackKnockbackMultiplier.Value, 1, 1);
             }
         }
 
         //Gives Drowsiness Cooldown to Hunter
-        __instance.character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Drowsy, _.attackDrowsiness.Value);
+        __instance.character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Drowsy, _.attackDrowsiness.Value, false, true, true);
 
         Log.LogDebug("Hunter Attack!");
     }
@@ -1184,7 +1193,7 @@ public partial class Plugin : BaseUnityPlugin
     {
         __result = false;
 
-        //Modified from original PlayerIsDeadOrDown Function
+        //_Modified_ from original PlayerIsDeadOrDown Function
         foreach (Character allCharacter in Character.AllCharacters)
         {
             //Dont count hunters
@@ -1203,13 +1212,15 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPrefix]
     private static bool DontRespawnHuntersPatch(RespawnChest __instance)
     {
-        //Modified from original RespawnAllPlayersHere Function
+        //_Modified_ from original RespawnAllPlayersHere Function
+        //Cannot invoke event as it is not owned by this script :( (Hope this doesnt break anything)
+        //__instance.ReviveUsed?.Invoke(__instance);
         foreach (Character allCharacter in Character.AllCharacters)
         {
             //Dont count hunters
             if ((allCharacter.data.dead || allCharacter.data.fullyPassedOut) && !isHunter(allCharacter))
             {
-                allCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, __instance.transform.position + __instance.transform.up * 8f, true);
+                allCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, __instance.RandomRevivePoint, true, (int)__instance.SegmentNumber);
             }
         }
 
@@ -1237,7 +1248,7 @@ public partial class Plugin : BaseUnityPlugin
     {
         __result = null;
 
-        //Edited from original ScoutEffigy.FinishConstruction
+        //_Modified_ from original ScoutEffigy.FinishConstruction
         if (!__instance.constructing)
         {
             return false;
@@ -1259,7 +1270,7 @@ public partial class Plugin : BaseUnityPlugin
         {
             return false;
         }
-        list.RandomSelection((Character c) => 1).photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, __instance.currentConstructHit.point + Vector3.up * 1f, false);
+        list.RandomSelection((Character c) => 1).photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, __instance.currentConstructHit.point + Vector3.up * 1f, false, -1);
         if ((bool)Zorro.Core.Singleton<AchievementManager>.Instance)
         {
             Zorro.Core.Singleton<AchievementManager>.Instance.AddToRunBasedInt(RUNBASEDVALUETYPE.ScoutsResurrected, 1);
@@ -1277,9 +1288,9 @@ public partial class Plugin : BaseUnityPlugin
         if (!applyStatus || isLocalHunter())
             return;
         if (_.climberRespawnCurse.Value > 0.05f)
-            __instance.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, _.climberRespawnCurse.Value - 0.05f);
+            __instance.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Curse, _.climberRespawnCurse.Value - 0.05f, false, true, true);
         else if (_.climberRespawnCurse.Value < 0.05f)
-            __instance.refs.afflictions.SubtractStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f - _.climberRespawnCurse.Value);
+            __instance.refs.afflictions.SubtractStatus(CharacterAfflictions.STATUSTYPE.Curse, 0.05f - _.climberRespawnCurse.Value, false, false);
         Log.LogDebug("Modified Curse Value");
     }
 
@@ -1438,31 +1449,62 @@ public partial class Plugin : BaseUnityPlugin
         EnumSettingUI enumComponent = content.GetChild(0).GetComponentInChildren<EnumSettingUI>();
 
         //Check if the values are modified
-        bool modifiedValues = false;
+        bool[] modifiedValues = [false, false];
         foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
         {
+            bool isZombieEntry = zombieValues.ContainsKey(configEntry.Key.Section + "/" + configEntry.Key.Key);
             switch (configEntry.Value.BoxedValue)
             {
                 case float f:
+                    if (isZombieEntry && f != (float)zombieValues[configEntry.Key.Section + "/" + configEntry.Key.Key])
+                        modifiedValues[1] = true;
                     if (f != (float)configEntry.Value.DefaultValue)
-                        modifiedValues = true;
+                    {
+                        modifiedValues[0] = true;
+                        if (!isZombieEntry)
+                            modifiedValues[1] = true;
+                    }
                     break;
                 case int i:
+                    if (isZombieEntry && i != (int)zombieValues[configEntry.Key.Section + "/" + configEntry.Key.Key])
+                        modifiedValues[1] = true;
                     if (i != (int)configEntry.Value.DefaultValue)
-                        modifiedValues = true;
+                    {
+                        modifiedValues[0] = true;
+                        if (!isZombieEntry)
+                            modifiedValues[1] = true;
+                    }
                     break;
                 case bool b:
+                    if (isZombieEntry && b != (bool)zombieValues[configEntry.Key.Section + "/" + configEntry.Key.Key])
+                        modifiedValues[1] = true;
                     if (b != (bool)configEntry.Value.DefaultValue)
-                        modifiedValues = true;
+                    {
+                        modifiedValues[0] = true;
+                        if (!isZombieEntry)
+                            modifiedValues[1] = true;
+                    }
                     break;
                 case string s:
+                    if (isZombieEntry && s != (string)zombieValues[configEntry.Key.Section + "/" + configEntry.Key.Key])
+                        modifiedValues[1] = true;
                     if (s != (string)configEntry.Value.DefaultValue)
-                        modifiedValues = true;
+                    {
+                        modifiedValues[0] = true;
+                        if (!isZombieEntry)
+                            modifiedValues[1] = true;
+                    }
                     break;
             }
+            if (modifiedValues[0] && modifiedValues[1])
+                break;
         }
 
-        int value = modifiedValues ? 0 : 1;
+        int value = 0;
+        if (!modifiedValues[0])
+            value = 1;
+        if (!modifiedValues[1])
+            value = 2;
         enumComponent.dropdown.SetValueWithoutNotify(value);
         return value;
     }
@@ -1470,7 +1512,8 @@ public partial class Plugin : BaseUnityPlugin
     enum SettingProfiles
     {
         Custom,
-        OneHunter
+        Default,
+        Zombie
     }
 
     class HunterSettingProfiles : EnumSetting<SettingProfiles>, IExposedSetting, IConditionalSetting
@@ -1482,13 +1525,27 @@ public partial class Plugin : BaseUnityPlugin
 
         public override void ApplyValue()
         {
-            if (Value == SettingProfiles.OneHunter)
+            if (Value != SettingProfiles.Custom)
             {
+                Dictionary<string, object> otherProfile = null;
+                if (Value == SettingProfiles.Zombie)
+                    otherProfile = _.zombieValues;
+
                 foreach (KeyValuePair<ConfigDefinition, ConfigEntryBase> configEntry in _.hunterConfigData)
                 {
-                    configEntry.Value.BoxedValue = configEntry.Value.DefaultValue;
+                    //Apply Default
+                    object setValue = configEntry.Value.DefaultValue;
+
+                    //Apply other Profile
+                    if (otherProfile != null && otherProfile.ContainsKey(configEntry.Key.Section + "/" + configEntry.Key.Key))
+                        setValue = otherProfile[configEntry.Key.Section + "/" + configEntry.Key.Key];
+
+                    //Set Value
+                    configEntry.Value.BoxedValue = setValue;
+
+                    //Send Values
                     if (Character.localCharacter != null)
-                        Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configEntry.Key.Section, configEntry.Key.Key, configEntry.Value.DefaultValue);
+                        Character.localCharacter.view.RPC("RPC_RecieveConfigData", RpcTarget.Others, configEntry.Key.Section, configEntry.Key.Key, setValue);
                 }
                 _.UpdateHunterModSettings();
             }
@@ -1511,7 +1568,7 @@ public partial class Plugin : BaseUnityPlugin
 
         public override List<string> GetUnlocalizedChoices()
         {
-            return new List<string>() { "Custom", "1 Hunter" };
+            return new List<string>() { "Custom", "Default", "Zombie" };
         }
 
         public bool ShouldShow()
