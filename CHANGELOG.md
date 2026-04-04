@@ -4,7 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## Known Bugs
 
-- Reported bugs of not working with more than 4 players?
+- Not currently aware of any!
+
+## [1.1.3] - 2026-4-4
+
+### Fixed
+
+- Updated to current Peak Version
+  (Campfire Patch Fix)
+  (Blowgun in Lobby Fix)
+- Fixed error when exiting game
 
 ## [1.1.2] - 2026-2-21
 

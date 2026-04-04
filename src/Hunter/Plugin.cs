@@ -358,7 +358,8 @@ public partial class Plugin : BaseUnityPlugin
     //Unload assets on Exit
     private void OnDestroy()
     {
-        assets.Unload(true);
+        //Just throws errors as it's already destroyed
+        //assets.Unload(true);
     }
 
     //---TESTING---
@@ -405,9 +406,6 @@ public partial class Plugin : BaseUnityPlugin
         //Add SmallIcon to bottom left
         if (__instance.IsLocal)
         {
-            //Add if player is loaded/ready to begin Hunter scene
-            __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, !isInLobby);
-
             smallRoleIcon = new GameObject("UI_RoleIcon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image)).GetComponent<Image>();
             smallRoleIcon.transform.SetParent(GUIManager.instance.transform.Find("Canvas_HUD/BarGroup/Bar"));
             smallRoleIcon.transform.localScale = Vector3.one * .5f;
@@ -430,6 +428,7 @@ public partial class Plugin : BaseUnityPlugin
             roleSwitcher = null;
             boardingPass = null;
             Log.LogDebug("RESETTING STATIC VALUES");
+            
         }
 
         if (!PhotonNetwork.IsMasterClient)
@@ -636,34 +635,54 @@ public partial class Plugin : BaseUnityPlugin
     }
 
     //Allows lighting of campfire without Hunter
-    [HarmonyPatch(typeof(Campfire), nameof(Campfire.EveryoneInRange))]
+    [HarmonyPatch(typeof(Campfire), nameof(Campfire.EveryoneInRange), new System.Type[] { typeof(float) })]
+    [HarmonyPrefix]
+    private static bool CampfireWithoutHunterPatch(Campfire __instance, ref bool __result, float range)
+    {
+        //_Modified_ from Campfire.EveryoneInRange()
+        __result = true;
+        List<Character> list = __instance.PlayerCharactersInRadius(range);
+        foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
+        {
+            //Skip Hunters in Check
+            if (!allPlayerCharacter.data.dead && !list.Contains(allPlayerCharacter) && !isHunter(allPlayerCharacter))
+            {
+                __result = false;
+            }
+        }
+
+        return false;
+    }
+
+    [HarmonyPatch(typeof(Campfire), nameof(Campfire.EveryoneInRange), new System.Type[] { typeof(string), typeof(float) }, new ArgumentType[] { ArgumentType.Out, ArgumentType.Normal })]
     [HarmonyPrefix]
     private static bool CampfireWithoutHunterPatch(Campfire __instance, ref bool __result, out string printout, float range)
     {
         //_Modified_ from Campfire.EveryoneInRange()
         bool flag = true;
         printout = "";
+        List<Character> list = __instance.PlayerCharactersInRadius(range);
+        Vector3 position = __instance.transform.position;
         foreach (Character allPlayerCharacter in PlayerHandler.GetAllPlayerCharacters())
         {
             //Skip Hunters in Check
-            if (!(allPlayerCharacter == null) && !allPlayerCharacter.photonView.Owner.IsInactive &&
-                !isHunter(allPlayerCharacter))
+            if (!allPlayerCharacter.data.dead && !list.Contains(allPlayerCharacter) && !isHunter(allPlayerCharacter))
             {
-                float num = Vector3.Distance(__instance.transform.position, allPlayerCharacter.Center);
-                if (num > range && !allPlayerCharacter.data.dead)
-                {
-                    flag = false;
-                    printout += $"\n{allPlayerCharacter.photonView.Owner.NickName} {Mathf.RoundToInt(num * CharacterStats.unitsToMeters)}m";
-                }
+                float num = Vector3.Distance(position, allPlayerCharacter.Center);
+                flag = false;
+                printout += $"\n{allPlayerCharacter.photonView.Owner.NickName} {Mathf.RoundToInt(num * CharacterStats.unitsToMeters)}m";
             }
         }
+
         //Hunters can't pre-light campfire even if everyone's there
         if (isLocalHunter() && !debugMode)
             flag = false;
+
         if (!flag)
         {
             printout = LocalizedText.GetText("CANTLIGHT") + "\n" + printout;
         }
+
         __result = flag;
         //Do not run original code
         return false;
@@ -706,27 +725,38 @@ public partial class Plugin : BaseUnityPlugin
         }
     }
 
+    //Conditions to spawn blowgun in lobby
+    [HarmonyPatch(typeof(Character), nameof(Character.Start))]
+    [HarmonyPrefix]
+    private static void BlowgunInLobby(Character __instance)
+    {
+        //Spawn with blowgun in lobby
+        if (!__instance.started && __instance.IsLocal)
+        {
+            //Add if player is loaded/ready to begin Hunter scene
+            __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, !isInLobby);
+            if (isInLobby)
+            {
+                Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, true);
+                Log.LogDebug("Give Local Blowgun");
+            }
+        }
+    }
+
     //Conditions to spawn Hunter
     [HarmonyPatch(typeof(RunManager), nameof(RunManager.StartRun))]
     [HarmonyPatch(typeof(Campfire), nameof(Campfire.Light_Rpc))]
     [HarmonyPostfix]
     private static void ReachedNextStagePatch()
     {
-        //Activate only if not in lobby
-        if (!isInLobby)
+        //Reset
+        if (MapHandler.Instance.currentSegment == 0)
         {
-            //Reset
-            if (MapHandler.Instance.currentSegment == 0)
-            {
-                //Climbers start with blowdart
-                Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, false);
-            }
-            //Load Section w/ Hunter Cooldown
-            _.StartCoroutine(_.LoadNewStage());
+            //Climbers start with blowdart
+            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, false);
         }
-        //Spawn with blowgun in lobby
-        else
-            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, true);
+        //Load Section w/ Hunter Cooldown
+        _.StartCoroutine(_.LoadNewStage());
     }
 
     //When first spawned and at each campfire
@@ -854,7 +884,7 @@ public partial class Plugin : BaseUnityPlugin
         if (!__instance.data.dead)
             return true;
 
-        //_Modified_ from original CheckEndGame Function
+        //_Modified_ from CheckEndGame Function
         bool flag = true;
         for (int i = 0; i < Character.AllCharacters.Count; i++)
         {
@@ -864,15 +894,19 @@ public partial class Plugin : BaseUnityPlugin
                 flag = false;
             }
         }
+
         //Debug: Do not end game
         if (debugMode)
             flag = false;
+
         if (flag)
         {
             if (PhotonNetwork.IsMasterClient)
                 __instance.EndGame();
             return false;
         }
+
+        //End of Modified Section
 
         //Only do death scenarios on Specific Client that has just died
         if (!__instance.IsLocal)
@@ -918,7 +952,7 @@ public partial class Plugin : BaseUnityPlugin
 
             }
         }
-        /*else if (debugMode)
+        else if (debugMode && false)
         {
             //Debug - Auto Respawn Climbers
             _.StartCoroutine(waitForRespawn());
@@ -927,7 +961,8 @@ public partial class Plugin : BaseUnityPlugin
                 yield return new WaitForSeconds(5);
                 Character.localCharacter.photonView.RPC("RPCA_ReviveAtPosition", RpcTarget.All, RespawnCharacterPos(false), true, -1);
             }
-        }*/
+        }
+
         //Don't return to original method
         return false;
     }
