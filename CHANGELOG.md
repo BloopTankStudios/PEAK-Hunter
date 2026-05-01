@@ -4,7 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Known Bugs
 
-- Not currently aware of any!
+- Not aware of any! Please post here if you notice any -> [Discord Post](https://discord.com/channels/1363179626435707082/1446981780648366150)
+
+## [1.1.4] - 2026-4-30
+
+### Fixed
+
+- Random Hunter now picks someone else other than the host every time
+- Fixed beginning function running twice
 
 ## [1.1.3] - 2026-4-4
 

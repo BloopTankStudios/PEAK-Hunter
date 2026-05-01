@@ -703,7 +703,7 @@ public partial class Plugin : BaseUnityPlugin
 
             //Randomizes who is the Hunter
             int chosen = Random.Range(0, Character.AllCharacters.Count);
-            Character.AllCharacters[chosen].view.RPC("RPCA_ChangeRole", RpcTarget.All, Character.localCharacter.view.Owner.ActorNumber, true);
+            Character.localCharacter.view.RPC("RPCA_ChangeRole", RpcTarget.All, Character.AllCharacters[chosen].view.Owner.ActorNumber, true);
 
             Log.LogDebug("Server: Chosen Random Hunter");
         }
@@ -735,26 +735,22 @@ public partial class Plugin : BaseUnityPlugin
         {
             //Add if player is loaded/ready to begin Hunter scene
             __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, !isInLobby);
-            if (isInLobby)
-            {
-                Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, true);
-                Log.LogDebug("Give Local Blowgun");
-            }
+
+            //One Climber starts with Blowgun
+            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, true);
+            Log.LogDebug("Give Local Blowgun");
+
+            //Start Run!
+            if (!isInLobby)
+                _.StartCoroutine(_.LoadNewStage());
         }
     }
 
     //Conditions to spawn Hunter
-    [HarmonyPatch(typeof(RunManager), nameof(RunManager.StartRun))]
     [HarmonyPatch(typeof(Campfire), nameof(Campfire.Light_Rpc))]
     [HarmonyPostfix]
     private static void ReachedNextStagePatch()
     {
-        //Reset
-        if (MapHandler.Instance.currentSegment == 0)
-        {
-            //Climbers start with blowdart
-            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, false);
-        }
         //Load Section w/ Hunter Cooldown
         _.StartCoroutine(_.LoadNewStage());
     }
