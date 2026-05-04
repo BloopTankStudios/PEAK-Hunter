@@ -86,7 +86,7 @@ public partial class Plugin : BaseUnityPlugin
     private static Sprite hunterSprite;
 
     //General UI
-    private static Image smallRoleIcon;
+    private static Image? smallRoleIcon;
     private static GameObject hunterNearPrefab;
     //PassportUI
     private static TextMeshProUGUI roleLabel;
@@ -180,9 +180,9 @@ public partial class Plugin : BaseUnityPlugin
 
         //Server creates Blowgun
         [PunRPC]
-        public void RPC_SpawnBlowgun(int actorNumber, bool ignoreHunter)
+        public void RPC_SpawnBlowgun(int actorNumber, bool giveAll)
         {
-            if (_.startWithBlowgun.Value && PhotonNetwork.IsMasterClient)
+            if ((giveAll || _.startWithBlowgun.Value) && PhotonNetwork.IsMasterClient)
             {
                 StartCoroutine(delay());
                 IEnumerator delay()
@@ -200,7 +200,7 @@ public partial class Plugin : BaseUnityPlugin
                         Log.LogDebug("Server: Try give blowgun to " + character.characterName);
 
                         //Give Blowgun to 1 Random Climber
-                        if ((!isHunter(character) && actorNumber == randomBlowgunRunner) || ignoreHunter)
+                        if ((!isHunter(character) && actorNumber == randomBlowgunRunner) || giveAll)
                         {
                             Item component = PhotonNetwork.InstantiateItemRoom("HealingDart Variant", character.transform.position, character.transform.rotation).GetComponent<Item>();
                             //Attach special component on all Clients
@@ -391,21 +391,40 @@ public partial class Plugin : BaseUnityPlugin
         }
     }
 
-    //Add Database Updater Code on Photon Player
+    //Pre-attach Special Network Component
     [HarmonyPatch(typeof(Character), nameof(Character.Awake))]
     [HarmonyPostfix]
-    private static void AddHunterUpdaterPatch(Character __instance)
+    private static void AttachRPCController(Character __instance)
     {
         isInLobby = SceneManager.GetActiveScene().name == "Airport";
 
-        __instance.gameObject.AddComponent<HunterPlayerUpdater>();
+        //Custom PhotonView Component
+        if (!__instance.gameObject.GetComponent<HunterPlayerUpdater>())
+        {
+            __instance.gameObject.AddComponent<HunterPlayerUpdater>();
 
-        //Load Config Data
-        SyncPlayerData(__instance);
+            //Reset Statics & Load Config Data
+            SyncPlayerData(__instance);
+        }
+    }
 
-        //Add SmallIcon to bottom left
+    //Refresh and Set Values for Loaded in Player Characters
+    [HarmonyPatch(typeof(Character), nameof(Character.Start))]
+    [HarmonyPrefix]
+    private static void StartCharacterScene(Character __instance)
+    {
+        AttachRPCController(__instance);
+
         if (__instance.IsLocal)
         {
+            //Add if player is loaded/ready to begin Hunter scene
+            __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, !isInLobby);
+
+            //Cancel Method if already run in a Scene
+            if (smallRoleIcon != null)
+                return;
+
+            //Add SmallIcon to bottom left
             smallRoleIcon = new GameObject("UI_RoleIcon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image)).GetComponent<Image>();
             smallRoleIcon.transform.SetParent(GUIManager.instance.transform.Find("Canvas_HUD/BarGroup/Bar"));
             smallRoleIcon.transform.localScale = Vector3.one * .5f;
@@ -413,6 +432,15 @@ public partial class Plugin : BaseUnityPlugin
 
             smallRoleIcon.sprite = isLocalHunter() ? hunterSprite : climberSprite;
             Log.LogDebug("Small Role Icon added to HUD");
+
+            //One Climber starts with Blowgun or All have Blowgun in Lobby
+            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, isInLobby);
+            Log.LogDebug("Give Local Blowgun");
+
+            //Campfire already starts run
+            //Start Run!
+            //if (!isInLobby)
+            //    _.StartCoroutine(_.LoadNewStage());
         }
     }
 
@@ -710,7 +738,8 @@ public partial class Plugin : BaseUnityPlugin
 
         //Randomizes who gets the Blowgun
         Log.LogDebug("Runners Total: " + (Character.AllCharacters.Count - hunterDatabase.Count));
-        if (Character.AllCharacters.Count - hunterDatabase.Count > 0)
+        randomBlowgunRunner = -1;
+        if (_.startWithBlowgun.Value && Character.AllCharacters.Count - hunterDatabase.Count > 0)
         {
             //Randomizes till picks one who isn't a hunter
             int chosen2;
@@ -722,27 +751,6 @@ public partial class Plugin : BaseUnityPlugin
 
             randomBlowgunRunner = Character.AllCharacters[chosen2].view.Owner.ActorNumber;
             Log.LogDebug("Server: Chosen Random Blowgun Runner -> " + randomBlowgunRunner + ": " + Character.AllCharacters[chosen2].characterName);
-        }
-    }
-
-    //Conditions to spawn blowgun in lobby
-    [HarmonyPatch(typeof(Character), nameof(Character.Start))]
-    [HarmonyPrefix]
-    private static void BlowgunInLobby(Character __instance)
-    {
-        //Spawn with blowgun in lobby
-        if (!__instance.started && __instance.IsLocal)
-        {
-            //Add if player is loaded/ready to begin Hunter scene
-            __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, !isInLobby);
-
-            //One Climber starts with Blowgun
-            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, Character.localCharacter.view.Owner.ActorNumber, true);
-            Log.LogDebug("Give Local Blowgun");
-
-            //Start Run!
-            if (!isInLobby)
-                _.StartCoroutine(_.LoadNewStage());
         }
     }
 

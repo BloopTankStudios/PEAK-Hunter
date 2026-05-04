@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 - Not aware of any! Please post here if you notice any -> [Discord Post](https://discord.com/channels/1363179626435707082/1446981780648366150)
 
+## [1.1.5] - 2026-5-3
+
+### Fixed
+
+- Fixed bug from last patch which made everyone get a blowgun like in the lobby
+- Blowguns will still spawn in lobby even if startWithBlowgun is set to false
+- Fixed beginning function running twice again
+- Improved compatibility for "MyColoredName" mod, improved robustness of setup functions
+
 ## [1.1.4] - 2026-4-30
 
 ### Fixed
