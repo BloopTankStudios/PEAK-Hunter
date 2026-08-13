@@ -1,6 +1,6 @@
 # Hunter Mod
 
-**All Clients must have the Mod Installed!**
+**All Clients must have the Mod Installed! While using this mod, some anticheat measures will need to be disabled as this mod teleports scouts and lights campfires without everyone present!**
 
 Want to try a new gamemode in PEAK? Try the Hunter mod where you can choose to be on the Hunter or Climber team as you race up the mountain! Similar to a Minecraft Manhunt!
 
@@ -16,6 +16,7 @@ The Goal:
 Abilities:
 * Fall Damage has been halved!
 * One random Climber will receive a Blowgun that can be reused every 7 minutes! (Every 1 Minute in the lobby)
+* (You can trade out a blowgun for snowballs in the Config Menu!)
 
 ![Reusable Blowgun](https://raw.githubusercontent.com/BloopTankStudios/PEAK-Hunter/refs/heads/main/readme_assets/Blowgun.png)
 
@@ -35,7 +36,7 @@ Abilities:
 * Upon death, you will respawn at the last campfire!
 * While passed out, you can spectate where the Climbers are!
 * You will receive a fourth of all Fall Damage!
-* The Reach Ability is now an explosive Attack which causes damage with knockback to anyone within this area of effect! Be careful though as it costs 50% of your stamina in drowsiness and you could pass out!
+* The Reach Ability is now an explosive Attack which causes damage with knockback to anyone within this area of effect! Be careful though as it costs 67% of your stamina in drowsiness and you could pass out!
 
 ![Hunter Attack](https://raw.githubusercontent.com/BloopTankStudios/PEAK-Hunter/refs/heads/main/readme_assets/HunterAttack.png)
 
@@ -66,6 +67,7 @@ These settings are the same as the ones in the Mod Config.
 
 For added spice, you can set the game to start with 1 Random Hunter by enabling "Pick Random Hunter"!
 You can also enable "Zombie Mode" where once a Climber dies, they join the Hunter Team!
+Or set Campfires as Safe Zones where Hunters cannot enter or harm Climbers!
 
 ## Zombie Mode
 

@@ -4,7 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## Known Bugs
 
-- Not aware of any! Please post here if you notice any -> [Discord Post](https://discord.com/channels/1363179626435707082/1446981780648366150)
+- The cooldown of the blowgun visually appears to stop when transferred between scouts. (Cooldown will still work)
+- If there's any others, post them here! -> [Discord Post](https://discord.com/channels/1363179626435707082/1446981780648366150)
+
+## [1.2.0] - 2026-8-12
+
+### Added
+
+- Added optional Campfire Safe Zone which is on by default for the Zombie Profile
+- Added option to choose snowballs instead of blowgun for climbers
+
+### Changed
+
+- Hunter specific knockback has been changed to 1/3 instead of 1/2 of Climber knockback
+- Changed default value of Hunter Attack Drowsiness: 1/2 -> 2/3
+
+### Fixed
+
+- Peak Hunter works with latest update!
+  (Fixed method changes)
+  (Fixed spawnpoints)
+  (Fixed lava rising mechanics)
+- Fixed many issues w/ randomizing who's the Hunter
+- Nametags now more dynamically update to be visible based on teams
+- Another change to checking when Players are ready at the Beach to start the cooldown timer
+- Changing the Team Colors Config value should properly update everyone's colors in every scenario
 
 ## [1.1.5] - 2026-5-3
 
