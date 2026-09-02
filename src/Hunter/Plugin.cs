@@ -47,6 +47,7 @@ public partial class Plugin : BaseUnityPlugin
     //Hunter Data
     private static List<int> hunterDatabase = new List<int>();
     private static float hunterCooldown = -1000;
+    private static bool startedFirstStage = false;
     ConfigFile hunterConfigData = new ConfigFile(Path.Combine(Paths.ConfigPath, "BT_Hunter.cfg"), true);
     // Gamemode
     ConfigEntry<bool> zombieMode;
@@ -447,6 +448,9 @@ public partial class Plugin : BaseUnityPlugin
             //Add if player is loaded/ready to begin Hunter scene
             if (isInLobby)
                 __instance.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, __instance.view.Owner.ActorNumber, false);
+            //Start the initial Beach cooldown on spawn; the campfire Light_Rpc sync no longer triggers it (PEAK 2.3.a)
+            else if (!startedFirstStage && MapHandler.Instance != null && MapHandler.Instance.currentSegment == 0)
+                _.StartCoroutine(_.LoadNewStage());
 
             //Cancel Method if already run in a Scene
             if (smallRoleIcon != null)
@@ -476,6 +480,7 @@ public partial class Plugin : BaseUnityPlugin
             randomBlowgunRunner = -1;
             hunterDatabase.Clear();
             hunterCooldown = -10000;
+            startedFirstStage = false;
             roleSwitcher = null;
             boardingPass = null;
             Log.LogDebug("RESETTING STATIC VALUES");
@@ -796,6 +801,11 @@ public partial class Plugin : BaseUnityPlugin
         int currSegment = MapHandler.Instance.currentSegment;
         if (currSegment == 0)
         {
+            //Only run the initial Beach stage once (multiple triggers can fire)
+            if (startedFirstStage)
+                yield break;
+            startedFirstStage = true;
+
             yield return new WaitForSeconds(5);
             //Player ready for first match
             Character.localCharacter.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, Character.localCharacter.view.Owner.ActorNumber, true);
@@ -845,7 +855,7 @@ public partial class Plugin : BaseUnityPlugin
             // Refresh except Curse
             afflictions.ClearAllStatus(true);
             // Give Poison til ready
-            afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1, false, true, true);
+            afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison, 1, false, true, true, true);
             afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = float.PositiveInfinity;
 
             // Wait
@@ -875,7 +885,7 @@ public partial class Plugin : BaseUnityPlugin
             afflictions.UpdateWeight();
             // Reset the Poison again
             afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Poison,
-                Character.localCharacter.GetMaxStamina(), false, true, true);
+                Character.localCharacter.GetMaxStamina(), false, true, true, true);
             // Set to heal immediately
             afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0;
             afflictions.currentDecrementalStatuses[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0.025f;
@@ -1162,9 +1172,22 @@ public partial class Plugin : BaseUnityPlugin
         Log.LogDebug("Reduced Damage: " + amount);
     }
 
+    //Reach right-click triggers the attack, but PEAK 2.3.a's "kick mode" (HelpingHand) reroutes it to RPCA_Kick, so patch both
     [HarmonyPatch(typeof(CharacterGrabbing), nameof(CharacterGrabbing.RPCA_StartReaching))]
     [HarmonyPostfix]
     private static void HunterReachAttackPatch(CharacterGrabbing __instance)
+    {
+        HunterAttack(__instance);
+    }
+
+    [HarmonyPatch(typeof(CharacterGrabbing), nameof(CharacterGrabbing.RPCA_Kick))]
+    [HarmonyPostfix]
+    private static void HunterKickAttackPatch(CharacterGrabbing __instance)
+    {
+        HunterAttack(__instance);
+    }
+
+    private static void HunterAttack(CharacterGrabbing __instance)
     {
         if (!_.enableHunterAttack.Value)
             return;

@@ -7,6 +7,20 @@ All notable changes to this project will be documented in this file.
 - The cooldown of the blowgun visually appears to stop when transferred between scouts. (Cooldown will still work)
 - If there's any others, post them here! -> [Discord Post](https://discord.com/channels/1363179626435707082/1446981780648366150)
 
+## [1.2.1] - 2026-9-2
+
+### Fixed
+
+- Compatibility with PEAK 2.3.a
+  - Hunter Attack now works with the new reach "kick mode" (Helping Hand setting).
+    The attack was tied to the reach right-click, which the update reroutes to a
+    kick; it now fires on either so the attack works regardless of the setting.
+  - Hunters now reliably get their spawn Cooldown + Poison again. The initial
+    Beach cooldown used to rely on the campfire's light-sync firing, which no
+    longer happens on spawn; it now also starts when the Hunter loads in (still
+    only once per run).
+  - The forced cooldown Poison now ignores invincibility so it can't be skipped.
+
 ## [1.2.0] - 2026-8-12
 
 ### Added
