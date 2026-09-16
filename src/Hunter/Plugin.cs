@@ -18,6 +18,7 @@ using System.Text.RegularExpressions;
 using Zorro.Settings.UI;
 using System.Linq;
 using Zorro.Core;
+using pworld.Scripts.Extensions;
 
 namespace Hunter;
 
@@ -221,6 +222,13 @@ public partial class Plugin : BaseUnityPlugin
                     {
                         Log.LogDebug("Server: Try give blowgun to " + character.characterName);
 
+                        //See if has slots available
+                        while (!playersHandsEmpty(character.player))
+                        {
+                            Log.LogDebug("Server: No Slots available, retrying in 5 seconds...");
+                            yield return new WaitForSeconds(5);
+                        }
+
                         //Give Blowgun to 1 Random Climber
                         if ((!isHunter(character) && (actorNumber == randomBlowgunRunner || itemToSpawn == ItemType.Snowballs)) || giveAll)
                         {
@@ -230,7 +238,7 @@ public partial class Plugin : BaseUnityPlugin
                                 ItemType.Snowballs => "Snowball",
                                 _ => ""
                             };
-                            Item component = PhotonNetwork.InstantiateItemRoom(itemName, character.transform.position, character.transform.rotation).GetComponent<Item>();
+                            Item component = PhotonNetwork.InstantiateItemRoom(itemName, character.transform.position, character.transform.rotation, false).GetComponent<Item>();
                             //Attach special component on all Clients
                             character.view.RPC("RPCA_EquippedBlowgun", RpcTarget.All, character.GetComponent<PhotonView>(), component.GetComponent<PhotonView>());
 
@@ -268,6 +276,23 @@ public partial class Plugin : BaseUnityPlugin
                     item.RequestPickup(characterView);
             }
         }
+    }
+
+    private static bool playersHandsEmpty(Player player)
+    {
+        //Not passed out
+        if (player.character.data.fullyPassedOut)
+            return false;
+        //Inventory
+        for (int i = 0; i < player.itemSlots.Length; i++)
+        {
+            if (player.itemSlots[i].IsEmpty())
+                return true;
+        }
+        //Open Hand
+        if (player.tempFullSlot.IsEmpty() && !player.character.data.isClimbingAnything)
+            return true;
+        return false;
     }
 
     private static bool isLocalHunter()
@@ -502,7 +527,12 @@ public partial class Plugin : BaseUnityPlugin
     {
         if (isInLobby)
             return true;
-        return !(isLocalHunter() ^ isHunter(__instance.characterInteractible.character));
+        //Is Same Team
+        if (!(isLocalHunter() ^ isHunter(__instance.characterInteractible.character)))
+            return true;
+        //Not Same Team
+        GUIManager.instance.playerNames.UpdateName(__instance.index, __instance.playerNamePos.position, false, __instance.mouth.amplitudeIndex);
+        return false;
     }
 
     //Teams cannot access each others backpacks
@@ -555,9 +585,20 @@ public partial class Plugin : BaseUnityPlugin
             hasSetColors = _.teamColors.Value;
         if (_.teamColors.Value)
         {
-            //Abbreviated: Convert RGB -> HSV -> Hue Shift -> RGB
-            float[] minMax = {Mathf.Min(color.r, color.g, color.b), Mathf.Max(color.r, color.g, color.b)};
-            color = new Color(1, 1, 1) * minMax[0] + (minMax[1] - minMax[0]) * (isHunter ? new Color(1, 0, 0) : new Color(0, 0, 1));
+            //Custom Color Conversions
+            for (int i = 0; i < 3; i++)
+            {
+                if (color[i] > .75)
+                    color[i] =  .5f;
+                else if (color[i] > .25)
+                    color[i] = (color[i] - .25f) * .5f + .25f;
+            }
+            if (isHunter)
+                color.r = 1;
+            else
+                color.b = 1;
+
+            Log.LogDebug("TeamColor: " + color);
         }
 
         //Override material colors
@@ -694,6 +735,14 @@ public partial class Plugin : BaseUnityPlugin
     [HarmonyPrefix]
     private static bool CampfireWithoutHunterPatch(Campfire __instance, ref bool __result, float range)
     {
+        //Miniruns break w/o this
+        if (!playersReadyForHunter())
+        {
+            //Spams console
+            //Log.LogDebug("Start of Run Campfire Check");
+            return true;
+        }
+
         //_Modified_ from Campfire.EveryoneInRange()
         __result = true;
         List<Character> list = __instance.PlayerCharactersInRadius(range);
@@ -787,15 +836,20 @@ public partial class Plugin : BaseUnityPlugin
     private static void ReachedNextStagePatch()
     {
         //Load Section w/ Hunter Cooldown
-        _.StartCoroutine(_.LoadNewStage());
+        if (loadingNewStage == null)
+            loadingNewStage = _.StartCoroutine(_.LoadNewStage());
     }
+
+    static Coroutine? loadingNewStage = null;
 
     //When first spawned and at each campfire
     private IEnumerator LoadNewStage()
     {
-        int currSegment = MapHandler.Instance.currentSegment;
-        if (currSegment == 0)
+        bool isFirstSpawn = false;
+        //First spawn
+        if (!playersReady.Contains(Character.localCharacter.view.Owner.ActorNumber))
         {
+            isFirstSpawn = true;
             yield return new WaitForSeconds(5);
             //Player ready for first match
             Character.localCharacter.view.RPC("RPCA_SetPlayerReadyStatus", RpcTarget.All, Character.localCharacter.view.Owner.ActorNumber, true);
@@ -808,6 +862,9 @@ public partial class Plugin : BaseUnityPlugin
         if (campfireSafeZoneSphere != null)
             Destroy(campfireSafeZoneSphere.GetComponent<SphereCollider>());
         campfireSafeZoneSphere = null;
+
+        //Wait to retrieve currSegment as could be minirun
+        int currSegment = MapHandler.Instance.currentSegment;
 
         //Set Sphere Colliders around campfires
         if (_.campfireSafeZone.Value)
@@ -841,7 +898,7 @@ public partial class Plugin : BaseUnityPlugin
             CharacterAfflictions afflictions = Character.localCharacter.refs.afflictions;
 
             //Hunter Cooldown
-            float cooldownLength = initialCooldown.Value + additionalCooldown.Value * MapHandler.Instance.currentSegment;
+            float cooldownLength = initialCooldown.Value + additionalCooldown.Value * currSegment;
             // Refresh except Curse
             afflictions.ClearAllStatus(true);
             // Give Poison til ready
@@ -851,7 +908,7 @@ public partial class Plugin : BaseUnityPlugin
             // Wait
             Log.LogDebug("Hunter Cooldown: " + cooldownLength);
             // Extra wait if people still passed out on beach
-            if (currSegment == 0)
+            if (isFirstSpawn)
             {
                 Log.LogDebug("Waiting for Players to Load on Beach...");
                 while (!playersReadyForHunter())
@@ -864,9 +921,18 @@ public partial class Plugin : BaseUnityPlugin
             hunterCooldown = cooldownLength + Time.time;
             yield return new WaitForSeconds(cooldownLength);
 
+            //Miniruns will have this code activate when it shouldn't as the game ends prematurely
+            if (MapHandler.Instance == null)
+            {
+                loadingNewStage = null;
+                yield break;
+            }
+
             //Spawn Hunter
             hunterCooldown = Time.time;
-            Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, RespawnCharacterPos(false), true);
+            //Doesn't respawn hunter if cooldown is 0 on the beach so you could play a mafia game of sorts \_(ツ)_/
+            if (cooldownLength > 0 || !isFirstSpawn)
+                Character.localCharacter.photonView.RPC("WarpPlayerRPC", RpcTarget.All, RespawnCharacterPos(false), true);
 
             // Refresh except Curse again in case fell or other afflictions
             //Hunter no longer drops their items
@@ -880,6 +946,7 @@ public partial class Plugin : BaseUnityPlugin
             afflictions.lastAddedStatus[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0;
             afflictions.currentDecrementalStatuses[(int)CharacterAfflictions.STATUSTYPE.Poison] = 0.025f;
         }
+        loadingNewStage = null;
     }
 
     //Due to spawning conditions, Hunters won't have the Fog or Lava to compete with
@@ -1139,28 +1206,88 @@ public partial class Plugin : BaseUnityPlugin
         }
     }
 
+    [HarmonyPatch(typeof(CharacterMovement), nameof(CharacterMovement.CheckFallDamage))]
+    [HarmonyPrefix]
+    private static bool ReducedFallDamage(CharacterMovement __instance)
+    {
+        //__Modified__ from CharacterMovement.CheckFallDamage
+        if (!(__instance.FallTime() > __instance.fallDamageTime))
+        {
+            return false;
+        }
+        float a = Mathf.Max(__instance.FallFactor(), 0.05f);
+        a = Mathf.Min(a, __instance.MaxVelDmg());
+        if (a >= 0.025f)
+        {
+            if (a > 0.3f && __instance.character.IsLocal)
+            {
+                __instance.character.Fall(a * 5f);
+            }
+
+            if (Time.time < __instance.fallDamageCapEndTime)
+            {
+                a = Mathf.Min(a, __instance.fallDamageCap);
+                __instance.fallDamageCapEndTime = Time.time;
+            }
+            a *= Ascents.fallDamageMultiplier;
+            a /= Ascents.etcDamageMultiplier;
+
+
+            //Specific Reduced FallDamage
+            if (isHunter(__instance.character))
+            {
+                a *= _.hunterDamageMultiplier.Value;
+                //Null fall damage for 7 seconds after respawning in case spawnpoint is high up
+                if (hunterCooldown - Time.time > -7)
+                    a = 0;
+                Log.LogDebug("Time since hunterCooldown: " + (hunterCooldown - Time.time));
+            }
+            else
+                a *= _.climberDamageMultiplier.Value;
+            Log.LogDebug("Reduced Fall Damage: " + a);
+            //End of Modification
+
+
+            if (__instance.character.refs.afflictions.AddStatus(CharacterAfflictions.STATUSTYPE.Injury, a) && a >= 0.025f)
+            {
+                Singleton<AchievementManager>.Instance.AddToRunBasedFloat(RUNBASEDVALUETYPE.FallDamageTaken, a);
+            }
+        }
+        return false;
+    }
+
     [HarmonyPatch(typeof(CharacterAfflictions), nameof(CharacterAfflictions.AddStatus))]
     [HarmonyPrefix]
-    private static void ModifyHealthPatch(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType, ref float amount, bool fromRPC)
+    private static void DrownsinessFunInLobby(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType, ref float amount, bool fromRPC)
     {
-        //Apply Drowsiness in Lobby
-        if (statusType == CharacterAfflictions.STATUSTYPE.Drowsy && isInLobby)
+        //Apply Drowsiness / Snowball Cold in Lobby
+        if ((statusType == CharacterAfflictions.STATUSTYPE.Drowsy || statusType == CharacterAfflictions.STATUSTYPE.Cold) && isInLobby)
             __instance.currentStatuses[(int)statusType] += amount;
-        //Only negates fall damage
-        if (statusType != CharacterAfflictions.STATUSTYPE.Injury)
-            return;
-        if (isHunter(__instance.character))
-        {
-            amount *= _.hunterDamageMultiplier.Value;
-            //Null fall damage for 7 seconds after respawning
-            if (hunterCooldown - Time.time > -7)
-                amount = 0;
-            Log.LogDebug("Time since hunterCooldown: " + (hunterCooldown - Time.time));
-        }
-        else
-            amount *= _.climberDamageMultiplier.Value;
-        Log.LogDebug("Reduced Damage: " + amount);
     }
+
+    //Unapply multiplier for arrow damage
+    /*[HarmonyPatch(typeof(ThornOnMe), nameof(ThornOnMe.OnPulledOut))]
+    [HarmonyPrefix]
+    private static bool ArrowApplyNormalDamage(ThornOnMe __instance, bool removedByPlayer)
+    {
+        float statusAmount = __instance.statusToAddOnRemoveAmt;
+
+        if (__instance.statusToAddOnRemove == CharacterAfflictions.STATUSTYPE.Injury)
+            if (isHunter(__instance.character))
+                statusAmount /= _.hunterDamageMultiplier.Value;
+            else
+                statusAmount /= _.climberDamageMultiplier.Value;
+
+        //__Modified__ from ThornOnMe.OnPulledOut
+        if (__instance.character.IsLocal && __instance.addStatusOnRemove)
+        {
+            __instance.character.refs.afflictions.AddStatus(__instance.statusToAddOnRemove, statusAmount);
+        }
+
+        Log.LogDebug("Un-Applied Damage Multiplier");
+        //Dont return to original method
+        return false;
+    }*/
 
     [HarmonyPatch(typeof(CharacterGrabbing), nameof(CharacterGrabbing.RPCA_StartReaching))]
     [HarmonyPostfix]
@@ -1193,9 +1320,6 @@ public partial class Plugin : BaseUnityPlugin
                         affliction = CharacterAfflictions.STATUSTYPE.Injury;
 
                     float attackValue = attackRangeAmount * _.attackAmount.Value;
-                    //Remove the damage multiplier for Hunter Attack
-                    if (affliction == CharacterAfflictions.STATUSTYPE.Injury)
-                        attackValue /= _.climberDamageMultiplier.Value;
 
                     //Damage does not apply if within safe zone
                     if (character.IsLocal && (campfireSafeZoneSphere == null || !campfireSafeZoneSphere.playerIsWithinBounds))
@@ -1242,6 +1366,101 @@ public partial class Plugin : BaseUnityPlugin
         return;
     }
 
+    /*[HarmonyPatch(typeof(Item), nameof(Item.RPC_SetThrownData))]
+    [HarmonyPostfix]
+    private static void ThrownSnowball(Item __instance, int characterID, float thrownAmount)
+    {
+        //if (_.startWithItem.Value != ItemType.Snowballs.ToString())
+        //    return;
+
+        Log.LogDebug("TRACKING THROWN " + __instance.GetItemName());
+
+        //Sneaky way to track Reusable Snowball
+        OptionableIntItemData specificIntItemData = __instance.GetData<OptionableIntItemData>(DataEntryKey.INVALID);
+        if (!specificIntItemData.HasData || specificIntItemData.Value != 1)
+            return;
+
+        Log.LogDebug("TRACKING THROWN");
+    }*/
+
+    static bool shouldBeCached = false;
+    static bool wasReusableSnowball = false;
+    static bool wasThrown = false;
+
+    [HarmonyPatch(typeof(CharacterItems), nameof(CharacterItems.DropItemRpc))]
+    [HarmonyPrefix]
+    private static void ThrowSnowball(CharacterItems __instance, float throwCharge, byte slotID, ref ItemInstanceData itemInstanceData, ref bool cacheToDroppedItems)
+    {
+        //Only Master spawns Snowball
+        if (!PhotonNetwork.IsMasterClient)
+            return;
+
+        shouldBeCached = cacheToDroppedItems;
+
+        if (_.startWithItem.Value != ItemType.Snowballs.ToString())
+            return;
+
+        //Same return checks as original method
+        if (!__instance.character.data.currentItem)
+            return;
+        ItemSlot itemSlot = __instance.character.player.GetItemSlot(slotID);
+        if (itemSlot == null)
+            return;
+        
+        //Check if reusable snowball
+        OptionableIntItemData specificIntItemData;
+        if (!itemInstanceData.TryGetDataEntry(DataEntryKey.INVALID, out specificIntItemData) || specificIntItemData.Value != 1)
+            return;
+        
+        //Store items to modify
+        cacheToDroppedItems = true;
+
+        wasReusableSnowball = true;
+        wasThrown = throwCharge > 0.1f;
+
+        //If wasn't thrown, don't strip of data or give a new one
+        if (!wasThrown)
+            return;
+
+        itemInstanceData.data.Remove(DataEntryKey.INVALID);
+
+        Log.LogDebug("Snowball Thrown - Cooldown Activated");
+
+        _.StartCoroutine(cooldown());
+        IEnumerator cooldown()
+        {
+            if (isInLobby)
+                yield return new WaitForSeconds(1);
+            else
+                yield return new WaitForSeconds(_.itemCooldown.Value * 60);
+            Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, __instance.character.view.Owner.ActorNumber, true, false);
+        }
+    }
+
+    [HarmonyPatch(typeof(CharacterItems), nameof(CharacterItems.DropItemRpc))]
+    [HarmonyPostfix]
+    private static void ThrownSnowball(CharacterItems __instance)
+    {
+        //Only Master spawns Snowball
+        if (!PhotonNetwork.IsMasterClient)
+            return;
+
+        if (!wasReusableSnowball)
+            return;
+        
+        Item snowball = __instance.droppedItems.Last().GetComponent<Item>();
+        if (wasThrown)
+            snowball.GetComponent<Breakable>().minBreakVelocity = 0;
+        else
+            Destroy(snowball.GetComponent<Breakable>());
+
+        //Remove from list if not supposed to be there
+        if (!shouldBeCached)
+            __instance.droppedItems.RemoveLast();
+
+        wasReusableSnowball = false;
+    }
+
     [HarmonyPatch(typeof(Item), nameof(Item.Consume))]
     [HarmonyPrefix]
     private static bool BlowgunReusePatch(Item __instance)
@@ -1281,33 +1500,6 @@ public partial class Plugin : BaseUnityPlugin
             itemUses.Value = 1;
             itemData.data.Remove(DataEntryKey.UseRemainingPercentage);
             Log.LogDebug("Climber Blowdart Recharged");
-        }
-    }
-
-    //Snowball respawn
-    [HarmonyPatch(typeof(Breakable), nameof(Breakable.Break))]
-    [HarmonyPrefix]
-    private static void RefreshSnowBallOnBreak(Breakable __instance)
-    {
-        if (__instance.alreadyBroke)
-            return;
-
-        //Sneaky way to track Reusable Snowballs
-        OptionableIntItemData specificIntItemData = __instance.item.GetData<OptionableIntItemData>(DataEntryKey.INVALID);
-        if (!specificIntItemData.HasData || specificIntItemData.Value != 1)
-            return;
-
-        if (PhotonNetwork.IsMasterClient)
-        {
-            Log.LogDebug("Reusable Snowball Broke");
-
-            _.StartCoroutine(cooldown());
-            IEnumerator cooldown()
-            {
-                if (!isInLobby)
-                    yield return new WaitForSeconds(_.itemCooldown.Value * 60);
-                Character.localCharacter.view.RPC("RPC_SpawnBlowgun", RpcTarget.MasterClient, __instance.item.lastThrownCharacter.view.Owner.ActorNumber, true, false);
-            }
         }
     }
 

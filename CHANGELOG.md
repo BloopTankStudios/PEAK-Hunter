@@ -7,6 +7,35 @@ All notable changes to this project will be documented in this file.
 - The cooldown of the blowgun visually appears to stop when transferred between scouts. (Cooldown will still work)
 - If there's any others, post them here! -> [Discord Post](https://discord.com/channels/1363179626435707082/1446981780648366150)
 
+## [1.2.1] - 2026-9-13
+
+### Added
+
+- Campfire safe zone now also doesn't drain hunger
+
+### Changed
+
+- When setting the initial hunter cooldown to 0, the hunter's won't respawn in a poof on the beach
+- Modified how snowballs work
+  (Cooldown triggered from throwing, not breaking)
+  (Snowballs will lose their reusable status upon being thrown and will always break on contact)
+  (A dropped reusable snowball will not lose it's reusable status, activate a cooldown, or break)
+  (If a new reusable snowball can't be placed within the inventory, will retry every 5 seconds)
+  (Snowballs won't be given while passed out)
+- Team colors now have slight hue variations to differentiate people better
+- Arrows, Traps, and Cursed Luggage now deal normal damage/injury with only fall damage being multiplied
+
+### Fixed
+
+- Updated to latest Update!
+  (Instantiating item method slightly changed)
+- Mod works better with single biome runs!
+  (Beginning code will now correctly run)
+  (No longer has a chance of spawning everyone at end campfire)
+  (Campfire safezones setup at correct campfire)
+  (Hunter spawning doesn't repeatedly spam)
+- Nametags stuck on screen when playing zombie mode
+
 ## [1.2.0] - 2026-8-12
 
 ### Added

@@ -1,9 +1,15 @@
 using Hunter;
+using Peak.Afflictions;
 using UnityEngine;
 
 public class CampfireRadiusTrigger : MonoBehaviour
 {
     public bool playerIsWithinBounds = false;
+
+    public static Affliction_NoHunger s_CampfireBuff = new Affliction_NoHunger
+    {
+        totalTime = 3f
+    };
 
     //Only apply physics to LocalPlayer
     void OnCollisionEnter(Collision collision)
@@ -41,5 +47,14 @@ public class CampfireRadiusTrigger : MonoBehaviour
             Plugin.Log.LogDebug("Local Player outside Campfire");
             StartCoroutine(Plugin._.showMessage("LEAVING SAFE ZONE", true));
         }  
+    }
+
+    private void Update()
+    {
+        //Apply no Hunger to Players within safe zones
+        if (playerIsWithinBounds)
+        {
+            Character.localCharacter.refs.afflictions.AddAffliction(s_CampfireBuff);
+        }
     }
 }
